@@ -4,13 +4,14 @@ A local/private tool control plane for managed CLI plugins and MCP exposure.
 
 `alter` is not a business-logic tool. It discovers and inspects plugin adapters. Actual tools such as `ingest` or `suuntool` do not need to know anything about `alter`, MCP, manifests, or schemas. Adapter plugins translate those tools into the alter contract.
 
-No daemon runs. Long-running MCP mode is `alter mcp`.
+No daemon runs.
 
 ## Architecture
 
-- `alter`: CLI entrypoint built on `urfave/cli/v3`, plugin discovery, inspection, runtime discovery, MCP server mode
+- `alter`: CLI entrypoint built on `urfave/cli/v3`, plugin discovery, inspection, runtime discovery, and adapter invocation
 - `internal/runtime`: runtime discovery and execution boundary
-- `internal/plugin`: typed plugin manifest parsing, discovery, inspection, and static doctor checks
+- `internal/plugin`: typed plugin manifest parsing, discovery, inspection, and static layout checks
+- `internal/adapter`: adapter execution and output normalization
 - `mise`: plugin-local runtime manager
 - `alter-foo`: adapter owned by `plugins/foo`
 - `foo`: actual external tool wrapped by adapter
@@ -70,6 +71,30 @@ plugins/hello/
   cmd/alter-hello/main.go
 ```
 
+## Adapter Contract
+
+Executable adapters expose three commands:
+
+```text
+<entrypoint> manifest
+<entrypoint> doctor
+<entrypoint> invoke <json>
+```
+
+`invoke` receives a JSON envelope:
+
+```json
+{
+  "tool": "greet",
+  "args": {
+    "name": "iomz"
+  }
+}
+```
+
+Adapters return JSON. alter validates and pretty-prints adapter JSON before writing it to
+stdout.
+
 Foundation-only plugin directories may contain only a manifest:
 
 ```text
@@ -88,10 +113,12 @@ go run ./cmd/alter setup shell
 go run ./cmd/alter plugin list
 go run ./cmd/alter plugin inspect hello
 go run ./cmd/alter plugin doctor hello
+go run ./cmd/alter hello greet --name iomz
 ```
 
-`alter plugin doctor <name>` performs static checks only. It validates the manifest and
-reports missing adapter entrypoints as warnings. It does not run plugins.
+`alter plugin doctor <name>` performs static layout checks first. If an adapter entrypoint
+exists, it runs adapter `doctor` through the runtime wrapper. Manifest-only plugin
+directories report missing entrypoints as warnings.
 
 ## Runtime Behavior
 
@@ -107,23 +134,36 @@ paths only and checks:
 If mise is missing, `alter setup mise` explains the bootstrap plan and asks for
 confirmation before installing anything.
 
-For current prototype runtime preparation, `alter`:
+For plugin execution, `alter`:
 
 1. discovers mise through the resolver
-2. keeps shell activation optional
-3. uses full paths internally
-4. shows an actionable error if `mise` is missing
+2. runs `mise install` inside the plugin workspace
+3. runs `mise exec -- <entrypoint> ...` inside the plugin workspace
+4. validates adapter JSON output
+5. uses full paths internally
+6. shows an actionable error if `mise` is missing
 
 Prototype intentionally does not auto-trust arbitrary mise configs silently.
 
 ## Responsibility Boundaries
 
-The alter core owns plugin discovery, manifest parsing, runtime discovery, and static
-inspection. Adapter plugins own translation into upstream tools. Upstream tools do not
-implement alter-specific interfaces.
+The alter core owns plugin discovery, manifest parsing, runtime discovery, runtime
+wrapping, and adapter output normalization. Adapter plugins own translation into upstream
+tools. Upstream tools do not implement alter-specific interfaces.
 
-Plugin execution and generated MCP exposure are future phases. They should remain outside
-manifest parsing and static discovery logic.
+Execution flow:
+
+```text
+alter
+-> plugin adapter contract
+-> runtime wrapper
+-> output normalization
+```
+
+Adapter internals may call upstream tools. That call remains adapter-owned.
+
+Generated MCP exposure is future work. It should remain outside manifest parsing and
+static discovery logic.
 
 ## Setup
 

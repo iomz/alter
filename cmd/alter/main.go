@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/iomz/alter/internal/adapter"
 	"github.com/iomz/alter/internal/plugin"
 	"github.com/iomz/alter/internal/runtime"
 	"github.com/iomz/alter/internal/ui"
@@ -27,6 +28,7 @@ func newCommand() *cli.Command {
 		Commands: []*cli.Command{
 			newPluginCommand(),
 			newSetupCommand(),
+			newHelloCommand(),
 		},
 	}
 }
@@ -85,11 +87,24 @@ func newPluginCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					report, err := store.Doctor(cmd.Args().First())
+					name := cmd.Args().First()
+					report, err := store.Doctor(name)
 					if err != nil {
 						return err
 					}
-					return printJSON(report)
+					if len(report.Warnings) > 0 {
+						return printJSON(report)
+					}
+					executor, err := executorContext()
+					if err != nil {
+						return err
+					}
+					out, err := executor.Doctor(name)
+					if err != nil {
+						return err
+					}
+					fmt.Print(string(out))
+					return nil
 				},
 			},
 		},
@@ -148,12 +163,48 @@ func newSetupCommand() *cli.Command {
 	}
 }
 
+func newHelloCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "hello",
+		Usage: "run hello adapter",
+		Commands: []*cli.Command{
+			{
+				Name:  "greet",
+				Usage: "return greeting JSON",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "name", Value: "world", Usage: "name to greet"},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					executor, err := executorContext()
+					if err != nil {
+						return err
+					}
+					out, err := executor.Invoke("hello", "greet", map[string]any{"name": cmd.String("name")})
+					if err != nil {
+						return err
+					}
+					fmt.Print(string(out))
+					return nil
+				},
+			},
+		},
+	}
+}
+
 func pluginContext() (*plugin.Store, error) {
 	root, err := plugin.FindRepoRoot()
 	if err != nil {
 		return nil, err
 	}
 	return plugin.NewStore(root), nil
+}
+
+func executorContext() (*adapter.Executor, error) {
+	store, err := pluginContext()
+	if err != nil {
+		return nil, err
+	}
+	return adapter.NewExecutor(store, runtime.NewMiseRunner(os.Stdout, os.Stderr)), nil
 }
 
 func printJSON(v any) error {

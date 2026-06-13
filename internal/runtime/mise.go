@@ -166,9 +166,6 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if hasMiseConfig(p.Path) {
-		fmt.Fprintf(r.stderr, "warning: plugin %q has mise.toml; review and trust it before running untrusted code\n", p.Manifest.Plugin.Name)
-	}
 
 	entrypoint := p.Manifest.Plugin.Entrypoint
 	if _, err := os.Stat(filepath.Join(p.Path, entrypoint)); err == nil {
