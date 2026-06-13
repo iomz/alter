@@ -2,15 +2,16 @@
 
 A local/private tool control plane for managed CLI plugins and MCP exposure.
 
-`alter` is not a business-logic tool. It discovers, checks, executes, and exposes plugin adapters. Actual tools such as `ingest` or `suuntool` do not need to know anything about `alter`, MCP, manifests, or schemas. Adapter plugins translate those tools into the alter contract.
+`alter` is not a business-logic tool. It discovers and inspects plugin adapters. Actual tools such as `ingest` or `suuntool` do not need to know anything about `alter`, MCP, manifests, or schemas. Adapter plugins translate those tools into the alter contract.
 
 No daemon runs. Long-running MCP mode is `alter mcp`.
 
 ## Architecture
 
-- `alter`: CLI entrypoint built on `urfave/cli/v3`, plugin discovery, inspection, execution wrapper, runtime discovery, MCP server mode
+- `alter`: CLI entrypoint built on `urfave/cli/v3`, plugin discovery, inspection, runtime discovery, MCP server mode
 - `internal/runtime`: runtime discovery and execution boundary
-- `mise`: plugin-local runtime installation and command execution
+- `internal/plugin`: typed plugin manifest parsing, discovery, inspection, and static doctor checks
+- `mise`: plugin-local runtime manager
 - `alter-foo`: adapter owned by `plugins/foo`
 - `foo`: actual external tool wrapped by adapter
 
@@ -24,17 +25,42 @@ plugins/suuntool
 
 Ownership and upstream information belong in `alter.plugin.toml`, not in filesystem path.
 
-## Plugin Contract
+## Plugin Manifest
 
-Each adapter supports:
+Each plugin directory contains `alter.plugin.toml`:
 
-```text
-<entrypoint> manifest
-<entrypoint> doctor
-<entrypoint> invoke <json>
+```toml
+[plugin]
+name = "hello"
+description = "Example alter plugin"
+maintainer = "iomz"
+entrypoint = "alter-hello"
+
+[upstream]
+name = "hello"
+repository = ""
+
+[runtime]
+manager = "mise"
+
+[mcp]
+enabled = true
+namespace = "hello"
 ```
 
-Prototype plugin:
+Manifests are parsed with `pelletier/go-toml` into strongly typed structures. Required
+fields are:
+
+- `plugin.name`
+- `plugin.description`
+- `plugin.entrypoint`
+- `runtime.manager`
+
+`plugin.name` must match the directory name. `runtime.manager` is currently `mise`.
+
+## Plugin Layout
+
+Prototype plugin directories:
 
 ```text
 plugins/hello/
@@ -44,7 +70,15 @@ plugins/hello/
   cmd/alter-hello/main.go
 ```
 
-`alter-hello` returns predictable JSON for `greet`.
+Foundation-only plugin directories may contain only a manifest:
+
+```text
+plugins/ingest/
+  alter.plugin.toml
+
+plugins/suuntool/
+  alter.plugin.toml
+```
 
 ## Commands
 
@@ -54,9 +88,10 @@ go run ./cmd/alter setup shell
 go run ./cmd/alter plugin list
 go run ./cmd/alter plugin inspect hello
 go run ./cmd/alter plugin doctor hello
-go run ./cmd/alter hello greet --name iomz
-go run ./cmd/alter mcp
 ```
+
+`alter plugin doctor <name>` performs static checks only. It validates the manifest and
+reports missing adapter entrypoints as warnings. It does not run plugins.
 
 ## Runtime Behavior
 
@@ -72,15 +107,23 @@ paths only and checks:
 If mise is missing, `alter setup mise` explains the bootstrap plan and asks for
 confirmation before installing anything.
 
-For current prototype plugin execution, `alter`:
+For current prototype runtime preparation, `alter`:
 
-1. runs commands from plugin workspace
-2. uses `mise install` when preparing plugin through `plugin doctor`
-3. uses `mise exec -- <entrypoint> ...` for adapter execution
-4. prints a clear warning when plugin workspace contains `mise.toml`
-5. shows an actionable error if `mise` is missing
+1. discovers mise through the resolver
+2. keeps shell activation optional
+3. uses full paths internally
+4. shows an actionable error if `mise` is missing
 
 Prototype intentionally does not auto-trust arbitrary mise configs silently.
+
+## Responsibility Boundaries
+
+The alter core owns plugin discovery, manifest parsing, runtime discovery, and static
+inspection. Adapter plugins own translation into upstream tools. Upstream tools do not
+implement alter-specific interfaces.
+
+Plugin execution and generated MCP exposure are future phases. They should remain outside
+manifest parsing and static discovery logic.
 
 ## Setup
 
@@ -109,15 +152,3 @@ Terminal output uses Charmbracelet libraries:
 - `lipgloss` for styled labels
 - `glamour` for Markdown-rendered setup notes
 - `huh` as the prompt styling foundation for future interactive setup
-
-## MCP
-
-`alter mcp` exposes plugin commands as MCP tools over stdio.
-
-Prototype exposes:
-
-```text
-hello_greet
-```
-
-MCP code is structured so future tools can be generated from adapter metadata.

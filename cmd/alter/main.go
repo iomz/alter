@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/iomz/alter/internal/mcp"
 	"github.com/iomz/alter/internal/plugin"
 	"github.com/iomz/alter/internal/runtime"
 	"github.com/iomz/alter/internal/ui"
@@ -28,8 +27,6 @@ func newCommand() *cli.Command {
 		Commands: []*cli.Command{
 			newPluginCommand(),
 			newSetupCommand(),
-			newMCPCommand(),
-			newHelloCommand(),
 		},
 	}
 }
@@ -43,7 +40,7 @@ func newPluginCommand() *cli.Command {
 				Name:  "list",
 				Usage: "list local plugins",
 				Action: func(context.Context, *cli.Command) error {
-					store, _, err := runtimeContext()
+					store, err := pluginContext()
 					if err != nil {
 						return err
 					}
@@ -65,7 +62,7 @@ func newPluginCommand() *cli.Command {
 					if cmd.NArg() != 1 {
 						return errors.New("usage: alter plugin inspect <name>")
 					}
-					store, _, err := runtimeContext()
+					store, err := pluginContext()
 					if err != nil {
 						return err
 					}
@@ -78,29 +75,21 @@ func newPluginCommand() *cli.Command {
 			},
 			{
 				Name:      "doctor",
-				Usage:     "prepare and run plugin doctor",
+				Usage:     "validate plugin manifest and layout",
 				ArgsUsage: "<name>",
 				Action: func(_ context.Context, cmd *cli.Command) error {
 					if cmd.NArg() != 1 {
 						return errors.New("usage: alter plugin doctor <name>")
 					}
-					store, runner, err := runtimeContext()
+					store, err := pluginContext()
 					if err != nil {
 						return err
 					}
-					p, err := store.Load(cmd.Args().First())
+					report, err := store.Doctor(cmd.Args().First())
 					if err != nil {
 						return err
 					}
-					if err := runner.Prepare(p); err != nil {
-						return err
-					}
-					out, err := runner.Run(p, "doctor")
-					if err != nil {
-						return err
-					}
-					fmt.Print(string(out))
-					return nil
+					return printJSON(report)
 				},
 			},
 		},
@@ -159,67 +148,12 @@ func newSetupCommand() *cli.Command {
 	}
 }
 
-func newMCPCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "mcp",
-		Usage: "serve MCP over stdio",
-		Action: func(context.Context, *cli.Command) error {
-			store, runner, err := runtimeContext()
-			if err != nil {
-				return err
-			}
-			return mcp.Serve(os.Stdin, os.Stdout, store, runner)
-		},
-	}
-}
-
-func newHelloCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "hello",
-		Usage: "run hello prototype plugin",
-		Commands: []*cli.Command{
-			{
-				Name:  "greet",
-				Usage: "print greeting",
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "name", Value: "world", Usage: "name to greet"},
-				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
-					store, runner, err := runtimeContext()
-					if err != nil {
-						return err
-					}
-					p, err := store.Load("hello")
-					if err != nil {
-						return err
-					}
-					payload, err := json.Marshal(map[string]any{
-						"tool": "greet",
-						"args": map[string]any{"name": cmd.String("name")},
-					})
-					if err != nil {
-						return err
-					}
-					out, err := runner.Run(p, "invoke", string(payload))
-					if err != nil {
-						return err
-					}
-					fmt.Print(string(out))
-					return nil
-				},
-			},
-		},
-	}
-}
-
-func runtimeContext() (*plugin.Store, *runtime.MiseRunner, error) {
+func pluginContext() (*plugin.Store, error) {
 	root, err := plugin.FindRepoRoot()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	store := plugin.NewStore(root)
-	runner := runtime.NewMiseRunner(os.Stdout, os.Stderr)
-	return store, runner, nil
+	return plugin.NewStore(root), nil
 }
 
 func printJSON(v any) error {

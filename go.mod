@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
+	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/urfave/cli/v3 v3.9.1
 )
 

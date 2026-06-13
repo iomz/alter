@@ -1,0 +1,16 @@
+[plugin]
+name = "ingest"
+description = "Adapter boundary for ingest tooling"
+maintainer = "iomz"
+entrypoint = "alter-ingest"
+
+[upstream]
+name = "ingest"
+repository = ""
+
+[runtime]
+manager = "mise"
+
+[mcp]
+enabled = false
+namespace = ""
