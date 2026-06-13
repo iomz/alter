@@ -69,7 +69,8 @@ paths only and checks:
 2. `~/.local/share/alter/bin/mise`
 3. `~/.local/bin/mise`
 
-If mise is missing, alter reports searched locations and does not install anything.
+If mise is missing, `alter setup mise` explains the bootstrap plan and asks for
+confirmation before installing anything.
 
 For current prototype plugin execution, `alter`:
 
@@ -83,8 +84,22 @@ Prototype intentionally does not auto-trust arbitrary mise configs silently.
 
 ## Setup
 
-`alter setup mise` inspects runtime discovery only. Installation is intentionally not
-implemented in Phase 1.
+`alter setup mise` checks `PATH` first, then alter-managed locations. If mise is
+still unavailable, it shows an interactive confirmation prompt before bootstrap.
+
+When confirmed, alter:
+
+1. downloads the official installer from `https://mise.run`
+2. runs it with `MISE_INSTALL_PATH=~/.local/share/alter/bin/mise`
+3. verifies the installed binary is executable
+4. uses the full absolute path internally
+
+`alter setup mise` never:
+
+- modifies shell startup files
+- runs `sudo`
+- installs without confirmation
+- configures future shell activation
 
 `alter setup shell` is a styled stub. Shell integration remains optional and explicit;
 alter does not modify shell startup files.

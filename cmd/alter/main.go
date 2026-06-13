@@ -115,15 +115,35 @@ func newSetupCommand() *cli.Command {
 			{
 				Name:  "mise",
 				Usage: "inspect mise runtime discovery",
-				Action: func(context.Context, *cli.Command) error {
+				Action: func(ctx context.Context, _ *cli.Command) error {
 					resolver := runtime.NewMiseResolver()
 					path, err := resolver.Resolve()
-					if err != nil {
-						ui.PrintRuntimeMissing(os.Stdout, err)
-						return ui.PrintStub(os.Stdout, "setup mise", "Installation is not implemented in Phase 1. Runtime discovery only checks PATH and alter-managed locations.")
+					if err == nil {
+						ui.PrintRuntimeFound(os.Stdout, path)
+						return nil
 					}
-					ui.PrintRuntimeFound(os.Stdout, path)
-					return ui.PrintStub(os.Stdout, "setup mise", "Installation is not implemented in Phase 1. Runtime discovery only checks PATH and alter-managed locations.")
+					ui.PrintRuntimeMissing(os.Stdout, err)
+					installPath, pathErr := resolver.ManagedInstallPath()
+					if pathErr != nil {
+						return pathErr
+					}
+					if err := ui.PrintMiseBootstrapExplanation(os.Stdout, installPath); err != nil {
+						return err
+					}
+					confirmed, err := ui.ConfirmMiseBootstrap(os.Stdout, os.Stdin)
+					if err != nil {
+						return err
+					}
+					if !confirmed {
+						fmt.Fprintln(os.Stdout, ui.Warning("cancelled"), "mise installation skipped")
+						return nil
+					}
+					installedPath, err := runtime.NewMiseBootstrapper(os.Stdout, os.Stderr).Install(ctx)
+					if err != nil {
+						return err
+					}
+					ui.PrintRuntimeInstalled(os.Stdout, installedPath)
+					return nil
 				},
 			},
 			{
