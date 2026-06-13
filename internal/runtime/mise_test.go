@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,6 +98,30 @@ func TestMiseResolverRejectsManagedNonExecutable(t *testing.T) {
 	}
 }
 
+func TestMiseRunnerSetsIsolatedMiseEnv(t *testing.T) {
+	home := t.TempDir()
+	resolver := testResolver(home, "", "")
+	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, resolver)
+	cmd := exec.Command("mise")
+
+	if err := runner.configureIsolatedMiseEnv(cmd); err != nil {
+		t.Fatal(err)
+	}
+
+	env := envMap(cmd.Env)
+	want := map[string]string{
+		"MISE_OVERRIDE_CONFIG_FILENAMES": "alter.mise.toml",
+		"MISE_GLOBAL_CONFIG_FILE":        filepath.Join(home, ".local", "state", "alter", "mise", "config.toml"),
+		"MISE_DATA_DIR":                  filepath.Join(home, ".local", "state", "alter", "mise", "data"),
+		"MISE_CACHE_DIR":                 filepath.Join(home, ".cache", "alter", "mise"),
+	}
+	for key, value := range want {
+		if env[key] != value {
+			t.Fatalf("%s = %q, want %q", key, env[key], value)
+		}
+	}
+}
+
 func testResolver(home, pathMise, managedMise string) *MisePathResolver {
 	files := map[string]struct{}{}
 	if managedMise != "" {
@@ -120,6 +146,17 @@ func testResolver(home, pathMise, managedMise string) *MisePathResolver {
 		},
 		abs: filepath.Abs,
 	}
+}
+
+func envMap(env []string) map[string]string {
+	result := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 type testFileInfo struct {

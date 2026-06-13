@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/iomz/alter/internal/runtime"
+
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -87,6 +89,20 @@ func PrintPromptDeferred(out io.Writer) {
 func PrintRuntimeInstalled(out io.Writer, path string) {
 	fmt.Fprintln(out, titleStyle.Render("mise runtime"))
 	fmt.Fprintf(out, "%s %s\n", okStyle.Render("installed"), path)
+}
+
+func PrintCleanupReport(out io.Writer, items []runtime.CleanupItem) {
+	fmt.Fprintln(out, titleStyle.Render("setup cleanup"))
+	for _, item := range items {
+		status := "kept"
+		style := warnStyle
+		if item.Removed {
+			status = "removed"
+			style = okStyle
+		}
+		fmt.Fprintf(out, "%s %s %s\n", style.Render(status), item.Label, item.Path)
+	}
+	fmt.Fprintln(out, "user shell configs and global mise/asdf files were not touched")
 }
 
 func Warning(s string) string {

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -16,7 +17,7 @@ const miseInstallURL = "https://mise.run"
 type MiseBootstrapper struct {
 	installPath func() (string, error)
 	download    func(context.Context, string) ([]byte, error)
-	runScript   func(context.Context, string, string, io.Writer, io.Writer) error
+	runScript   func(context.Context, string, string) ([]byte, error)
 	mkdirAll    func(string, os.FileMode) error
 	writeFile   func(string, []byte, os.FileMode) error
 	remove      func(string) error
@@ -60,24 +61,21 @@ func (b *MiseBootstrapper) Install(ctx context.Context) (string, error) {
 	}
 	defer b.remove(scriptPath)
 
-	if err := b.runScript(ctx, scriptPath, target, b.stdout, b.stderr); err != nil {
+	output, err := b.runScript(ctx, scriptPath, target)
+	if err != nil {
+		if len(bytes.TrimSpace(output)) > 0 {
+			fmt.Fprintln(b.stderr, "mise installer output:")
+			_, _ = b.stderr.Write(output)
+			if !bytes.HasSuffix(output, []byte("\n")) {
+				fmt.Fprintln(b.stderr)
+			}
+		}
 		return "", err
 	}
 	if err := verifyManagedMise(target); err != nil {
 		return "", err
 	}
 	return target, nil
-}
-
-func (r *MisePathResolver) ManagedInstallPath() (string, error) {
-	home, err := r.homeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	if home == "" {
-		return "", fmt.Errorf("resolve home directory: empty path")
-	}
-	return r.abs(filepath.Join(home, ".local", "share", "alter", "bin", "mise"))
 }
 
 func downloadMiseInstaller(ctx context.Context, url string) ([]byte, error) {
@@ -104,15 +102,14 @@ func downloadMiseInstaller(ctx context.Context, url string) ([]byte, error) {
 	return body, nil
 }
 
-func runMiseInstallerScript(ctx context.Context, scriptPath, target string, stdout, stderr io.Writer) error {
+func runMiseInstallerScript(ctx context.Context, scriptPath, target string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "sh", scriptPath)
 	cmd.Env = append(os.Environ(), "MISE_INSTALL_PATH="+target)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("run mise installer: %w", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("run mise installer: %w", err)
 	}
-	return nil
+	return output, nil
 }
 
 func verifyManagedMise(path string) error {

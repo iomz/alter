@@ -87,14 +87,50 @@ func (r *MisePathResolver) searchedPaths() []string {
 }
 
 func (r *MisePathResolver) managedPaths() []string {
-	home, err := r.homeDir()
-	if err != nil || home == "" {
+	path, err := r.ManagedInstallPath()
+	if err != nil {
 		return nil
 	}
-	return []string{
-		filepath.Join(home, ".local", "share", "alter", "bin", "mise"),
-		filepath.Join(home, ".local", "bin", "mise"),
+	localBinPath, err := r.LocalBinPath()
+	if err != nil {
+		return []string{path}
 	}
+	return []string{path, localBinPath}
+}
+
+func (r *MisePathResolver) managedPath(parts ...string) (string, error) {
+	home, err := r.homeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	if home == "" {
+		return "", fmt.Errorf("resolve home directory: empty path")
+	}
+	return r.abs(filepath.Join(append([]string{home}, parts...)...))
+}
+
+func (r *MisePathResolver) ManagedInstallPath() (string, error) {
+	return r.managedPath(".local", "share", "alter", "bin", "mise")
+}
+
+func (r *MisePathResolver) LocalBinPath() (string, error) {
+	return r.managedPath(".local", "bin", "mise")
+}
+
+func (r *MisePathResolver) ManagedStateDir() (string, error) {
+	return r.managedPath(".local", "state", "alter", "mise")
+}
+
+func (r *MisePathResolver) ManagedDataDir() (string, error) {
+	return r.managedPath(".local", "state", "alter", "mise", "data")
+}
+
+func (r *MisePathResolver) ManagedCacheDir() (string, error) {
+	return r.managedPath(".cache", "alter", "mise")
+}
+
+func (r *MisePathResolver) ManagedConfigFile() (string, error) {
+	return r.managedPath(".local", "state", "alter", "mise", "config.toml")
 }
 
 func uniqueAbsolutePaths(paths []string) []string {
@@ -149,12 +185,15 @@ func (r *MiseRunner) Prepare(p plugin.Plugin) error {
 		return err
 	}
 	if hasMiseConfig(p.Path) {
-		fmt.Fprintf(r.stderr, "warning: plugin %q has mise.toml; review and trust it before running untrusted code\n", p.Manifest.Plugin.Name)
+		fmt.Fprintf(r.stderr, "warning: plugin %q has alter.mise.toml; review and trust it before running untrusted code\n", p.Manifest.Plugin.Name)
 	}
 	cmd := exec.Command(misePath, "install")
 	cmd.Dir = p.Path
 	cmd.Stdout = r.stdout
 	cmd.Stderr = r.stderr
+	if err := r.configureIsolatedMiseEnv(cmd); err != nil {
+		return err
+	}
 	return cmd.Run()
 }
 
@@ -176,12 +215,51 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 	cmd := exec.Command(misePath, cmdArgs...)
 	cmd.Dir = p.Path
 	cmd.Stderr = r.stderr
+	if err := r.configureIsolatedMiseEnv(cmd); err != nil {
+		return nil, err
+	}
 	return cmd.Output()
 }
 
 func hasMiseConfig(path string) bool {
-	_, err := os.Stat(filepath.Join(path, "mise.toml"))
+	_, err := os.Stat(filepath.Join(path, "alter.mise.toml"))
 	return err == nil
+}
+
+func (r *MiseRunner) configureIsolatedMiseEnv(cmd *exec.Cmd) error {
+	resolver, ok := r.resolver.(*MisePathResolver)
+	if !ok {
+		cmd.Env = append(os.Environ(), "MISE_OVERRIDE_CONFIG_FILENAMES=alter.mise.toml")
+		return nil
+	}
+	stateDir, err := resolver.ManagedStateDir()
+	if err != nil {
+		return err
+	}
+	dataDir, err := resolver.ManagedDataDir()
+	if err != nil {
+		return err
+	}
+	cacheDir, err := resolver.ManagedCacheDir()
+	if err != nil {
+		return err
+	}
+	configFile, err := resolver.ManagedConfigFile()
+	if err != nil {
+		return err
+	}
+	for _, dir := range []string{stateDir, dataDir, cacheDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create isolated mise directory %q: %w", dir, err)
+		}
+	}
+	cmd.Env = append(os.Environ(),
+		"MISE_OVERRIDE_CONFIG_FILENAMES=alter.mise.toml",
+		"MISE_GLOBAL_CONFIG_FILE="+configFile,
+		"MISE_DATA_DIR="+dataDir,
+		"MISE_CACHE_DIR="+cacheDir,
+	)
+	return nil
 }
 
 var _ error = MiseNotFoundError{}

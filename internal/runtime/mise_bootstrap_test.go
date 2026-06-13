@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +16,8 @@ func TestMiseBootstrapperInstallsToManagedPath(t *testing.T) {
 	var gotURL string
 	var gotScriptPath string
 	var gotTarget string
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
 	bootstrapper := &MiseBootstrapper{
 		installPath: func() (string, error) {
@@ -23,20 +27,20 @@ func TestMiseBootstrapperInstallsToManagedPath(t *testing.T) {
 			gotURL = url
 			return []byte("#!/bin/sh\n"), nil
 		},
-		runScript: func(_ context.Context, scriptPath, targetPath string, _, _ io.Writer) error {
+		runScript: func(_ context.Context, scriptPath, targetPath string) ([]byte, error) {
 			gotScriptPath = scriptPath
 			gotTarget = targetPath
 			if err := os.WriteFile(targetPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
-				return err
+				return nil, err
 			}
-			return nil
+			return []byte("installer success output\n"), nil
 		},
 		mkdirAll:  os.MkdirAll,
 		writeFile: os.WriteFile,
 		remove:    os.Remove,
 		tempDir:   tempDir,
-		stdout:    io.Discard,
-		stderr:    io.Discard,
+		stdout:    &stdout,
+		stderr:    &stderr,
 	}
 
 	got, err := bootstrapper.Install(context.Background())
@@ -57,6 +61,44 @@ func TestMiseBootstrapperInstallsToManagedPath(t *testing.T) {
 	}
 	if _, err := os.Stat(gotScriptPath); !os.IsNotExist(err) {
 		t.Fatalf("installer script still exists, stat error = %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no installer output", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no installer output", stderr.String())
+	}
+}
+
+func TestMiseBootstrapperShowsInstallerOutputOnlyOnFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	target := filepath.Join(tempDir, "alter", "bin", "mise")
+	var stderr bytes.Buffer
+
+	bootstrapper := &MiseBootstrapper{
+		installPath: func() (string, error) {
+			return target, nil
+		},
+		download: func(context.Context, string) ([]byte, error) {
+			return []byte("#!/bin/sh\n"), nil
+		},
+		runScript: func(context.Context, string, string) ([]byte, error) {
+			return []byte("raw installer failure\n"), errors.New("installer failed")
+		},
+		mkdirAll:  os.MkdirAll,
+		writeFile: os.WriteFile,
+		remove:    os.Remove,
+		tempDir:   tempDir,
+		stdout:    io.Discard,
+		stderr:    &stderr,
+	}
+
+	_, err := bootstrapper.Install(context.Background())
+	if err == nil {
+		t.Fatal("Install() error = nil, want installer error")
+	}
+	if !bytes.Contains(stderr.Bytes(), []byte("raw installer failure")) {
+		t.Fatalf("stderr = %q, want raw installer output", stderr.String())
 	}
 }
 

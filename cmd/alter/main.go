@@ -162,6 +162,18 @@ func newSetupCommand() *cli.Command {
 					return err
 				},
 			},
+			{
+				Name:  "cleanup",
+				Usage: "remove alter-managed mise runtime files",
+				Action: func(context.Context, *cli.Command) error {
+					items, err := runtime.CleanupManagedMise()
+					if err != nil {
+						return err
+					}
+					ui.PrintCleanupReport(os.Stdout, items)
+					return nil
+				},
+			},
 		},
 	}
 }

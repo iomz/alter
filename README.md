@@ -67,7 +67,7 @@ Prototype plugin directories:
 ```text
 plugins/hello/
   alter.plugin.toml
-  mise.toml
+  alter.mise.toml
   alter-hello
   cmd/alter-hello/main.go
 ```
@@ -111,6 +111,7 @@ plugins/suuntool/
 ```sh
 go run ./cmd/alter setup mise
 go run ./cmd/alter setup shell
+go run ./cmd/alter setup cleanup
 go run ./cmd/alter plugin list
 go run ./cmd/alter plugin inspect hello
 go run ./cmd/alter plugin doctor hello
@@ -144,6 +145,18 @@ For plugin execution, `alter`:
 4. validates adapter JSON output
 5. uses full paths internally
 6. shows an actionable error if `mise` is missing
+
+Plugin runtime execution is isolated from user global mise/asdf configuration. alter sets:
+
+```text
+MISE_OVERRIDE_CONFIG_FILENAMES=alter.mise.toml
+MISE_GLOBAL_CONFIG_FILE=~/.local/state/alter/mise/config.toml
+MISE_DATA_DIR=~/.local/state/alter/mise/data
+MISE_CACHE_DIR=~/.cache/alter/mise
+```
+
+Plugin runtime config lives in `alter.mise.toml`, not `mise.toml`, so mise does not read
+`.tool-versions` or user global mise config during alter-managed plugin execution.
 
 Prototype intentionally does not auto-trust arbitrary mise configs silently.
 
@@ -205,8 +218,11 @@ When confirmed, alter:
 
 1. downloads the official installer from `https://mise.run`
 2. runs it with `MISE_INSTALL_PATH=~/.local/share/alter/bin/mise`
-3. verifies the installed binary is executable
-4. uses the full absolute path internally
+3. captures installer stdout/stderr
+4. shows alter-owned success output
+5. prints raw installer output only if installation fails
+6. verifies the installed binary is executable
+7. uses the full absolute path internally
 
 `alter setup mise` never:
 
@@ -214,6 +230,15 @@ When confirmed, alter:
 - runs `sudo`
 - installs without confirmation
 - configures future shell activation
+
+`alter setup cleanup` removes only alter-managed mise runtime files:
+
+- `~/.local/share/alter/bin/mise`
+- `~/.local/state/alter/mise`
+- `~/.cache/alter/mise`
+
+It never removes shell startup files, `~/.tool-versions`, user global mise config, or asdf
+files.
 
 `alter setup shell` is a styled stub. Shell integration remains optional and explicit;
 alter does not modify shell startup files.
