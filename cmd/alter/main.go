@@ -98,16 +98,16 @@ func newPluginCommand() *cli.Command {
 					if len(report.Warnings) > 0 {
 						return printJSON(report)
 					}
-					executor, err := executorContext()
+					p, err := store.Load(name)
 					if err != nil {
 						return err
 					}
-					out, err := executor.Doctor(name)
+					runner := runtime.NewMiseRunner(os.Stdout, os.Stderr)
+					diagnostics, err := runner.Diagnostics(p)
 					if err != nil {
 						return err
 					}
-					fmt.Print(string(out))
-					return nil
+					return printJSON(diagnostics)
 				},
 			},
 		},

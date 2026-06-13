@@ -1,18 +1,22 @@
 package runtime
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/iomz/alter/internal/plugin"
+	"github.com/pelletier/go-toml/v2"
 )
 
 const miseBinaryName = "mise"
+const miseConfigFileName = "alter.mise.toml"
 
 type MiseResolver interface {
 	Resolve() (string, error)
@@ -125,6 +129,10 @@ func (r *MisePathResolver) ManagedDataDir() (string, error) {
 	return r.managedPath(".local", "state", "alter", "mise", "data")
 }
 
+func (r *MisePathResolver) ManagedMiseStateDir() (string, error) {
+	return r.managedPath(".local", "state", "alter", "mise", "state")
+}
+
 func (r *MisePathResolver) ManagedCacheDir() (string, error) {
 	return r.managedPath(".cache", "alter", "mise")
 }
@@ -171,6 +179,28 @@ type MiseRunner struct {
 	resolver MiseResolver
 }
 
+type MiseEnvironment struct {
+	Vars             []string          `json:"-"`
+	Values           map[string]string `json:"values"`
+	GlobalConfigFile string            `json:"globalConfigFile"`
+	DataDir          string            `json:"dataDir"`
+	CacheDir         string            `json:"cacheDir"`
+	StateDir         string            `json:"stateDir"`
+}
+
+type RuntimeConfig struct {
+	Path  string   `json:"path"`
+	Tools []string `json:"tools"`
+}
+
+type DiagnosticReport struct {
+	PluginWorkspace string            `json:"pluginWorkspace"`
+	MiseBinary      string            `json:"miseBinary"`
+	Environment     map[string]string `json:"environment"`
+	RuntimeConfig   RuntimeConfig     `json:"runtimeConfig"`
+	InstallSkipped  bool              `json:"installSkipped"`
+}
+
 func NewMiseRunner(stdout, stderr io.Writer) *MiseRunner {
 	return NewMiseRunnerWithResolver(stdout, stderr, NewMiseResolver())
 }
@@ -185,16 +215,27 @@ func (r *MiseRunner) Prepare(p plugin.Plugin) error {
 		return err
 	}
 	if hasMiseConfig(p.Path) {
-		fmt.Fprintf(r.stderr, "warning: plugin %q has alter.mise.toml; review and trust it before running untrusted code\n", p.Manifest.Plugin.Name)
+		fmt.Fprintf(r.stderr, "warning: plugin %q has %s; review and trust it before running untrusted code\n", p.Manifest.Plugin.Name, miseConfigFileName)
+	}
+	tools, err := declaredTools(p.Path)
+	if err != nil {
+		return err
+	}
+	if len(tools) == 0 {
+		return nil
 	}
 	cmd := exec.Command(misePath, "install")
 	cmd.Dir = p.Path
-	cmd.Stdout = r.stdout
-	cmd.Stderr = r.stderr
-	if err := r.configureIsolatedMiseEnv(cmd); err != nil {
+	if err := r.configureMiseCommand(cmd); err != nil {
 		return err
 	}
-	return cmd.Run()
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("mise install failed: %w\n%s", err, strings.TrimSpace(output.String()))
+	}
+	return nil
 }
 
 func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
@@ -214,52 +255,155 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 	cmdArgs := append([]string{"exec", "--", entrypoint}, args...)
 	cmd := exec.Command(misePath, cmdArgs...)
 	cmd.Dir = p.Path
-	cmd.Stderr = r.stderr
-	if err := r.configureIsolatedMiseEnv(cmd); err != nil {
+	if err := r.configureMiseCommand(cmd); err != nil {
 		return nil, err
 	}
-	return cmd.Output()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("mise exec failed: %w\n%s", err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
 }
 
 func hasMiseConfig(path string) bool {
-	_, err := os.Stat(filepath.Join(path, "alter.mise.toml"))
+	_, err := os.Stat(filepath.Join(path, miseConfigFileName))
 	return err == nil
 }
 
-func (r *MiseRunner) configureIsolatedMiseEnv(cmd *exec.Cmd) error {
+func (r *MiseRunner) configureMiseCommand(cmd *exec.Cmd) error {
+	env, err := r.BuildMiseEnvironment()
+	if err != nil {
+		return err
+	}
+	cmd.Env = env.Vars
+	return nil
+}
+
+func (r *MiseRunner) BuildMiseEnvironment() (MiseEnvironment, error) {
 	resolver, ok := r.resolver.(*MisePathResolver)
 	if !ok {
-		cmd.Env = append(os.Environ(), "MISE_OVERRIDE_CONFIG_FILENAMES=alter.mise.toml")
-		return nil
+		values := safeBaseEnv()
+		values["MISE_OVERRIDE_CONFIG_FILENAMES"] = miseConfigFileName
+		return MiseEnvironment{Vars: flattenEnv(values), Values: values}, nil
 	}
 	stateDir, err := resolver.ManagedStateDir()
 	if err != nil {
-		return err
+		return MiseEnvironment{}, err
 	}
 	dataDir, err := resolver.ManagedDataDir()
 	if err != nil {
-		return err
+		return MiseEnvironment{}, err
 	}
 	cacheDir, err := resolver.ManagedCacheDir()
 	if err != nil {
-		return err
+		return MiseEnvironment{}, err
 	}
 	configFile, err := resolver.ManagedConfigFile()
 	if err != nil {
-		return err
+		return MiseEnvironment{}, err
 	}
-	for _, dir := range []string{stateDir, dataDir, cacheDir} {
+	miseStateDir, err := resolver.ManagedMiseStateDir()
+	if err != nil {
+		return MiseEnvironment{}, err
+	}
+	for _, dir := range []string{stateDir, dataDir, cacheDir, miseStateDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create isolated mise directory %q: %w", dir, err)
+			return MiseEnvironment{}, fmt.Errorf("create isolated mise directory %q: %w", dir, err)
 		}
 	}
-	cmd.Env = append(os.Environ(),
-		"MISE_OVERRIDE_CONFIG_FILENAMES=alter.mise.toml",
-		"MISE_GLOBAL_CONFIG_FILE="+configFile,
-		"MISE_DATA_DIR="+dataDir,
-		"MISE_CACHE_DIR="+cacheDir,
-	)
-	return nil
+	values := safeBaseEnv()
+	values["MISE_OVERRIDE_CONFIG_FILENAMES"] = miseConfigFileName
+	values["MISE_GLOBAL_CONFIG_FILE"] = configFile
+	values["MISE_DATA_DIR"] = dataDir
+	values["MISE_CACHE_DIR"] = cacheDir
+	values["MISE_STATE_DIR"] = miseStateDir
+	return MiseEnvironment{
+		Vars:             flattenEnv(values),
+		Values:           values,
+		GlobalConfigFile: configFile,
+		DataDir:          dataDir,
+		CacheDir:         cacheDir,
+		StateDir:         miseStateDir,
+	}, nil
+}
+
+func (r *MiseRunner) Diagnostics(p plugin.Plugin) (DiagnosticReport, error) {
+	misePath, err := r.resolver.Resolve()
+	if err != nil {
+		return DiagnosticReport{}, err
+	}
+	env, err := r.BuildMiseEnvironment()
+	if err != nil {
+		return DiagnosticReport{}, err
+	}
+	tools, err := declaredTools(p.Path)
+	if err != nil {
+		return DiagnosticReport{}, err
+	}
+	configPath := filepath.Join(p.Path, miseConfigFileName)
+	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
+		configPath = ""
+	} else if err != nil {
+		return DiagnosticReport{}, fmt.Errorf("inspect plugin runtime config: %w", err)
+	}
+	return DiagnosticReport{
+		PluginWorkspace: p.Path,
+		MiseBinary:      misePath,
+		Environment:     env.Values,
+		RuntimeConfig: RuntimeConfig{
+			Path:  configPath,
+			Tools: tools,
+		},
+		InstallSkipped: len(tools) == 0,
+	}, nil
+}
+
+func safeBaseEnv() map[string]string {
+	values := make(map[string]string)
+	for _, key := range []string{"HOME", "PATH", "TMPDIR", "TERM", "LANG", "LC_ALL"} {
+		if value, ok := os.LookupEnv(key); ok && value != "" {
+			values[key] = value
+		}
+	}
+	return values
+}
+
+func flattenEnv(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, key := range keys {
+		env = append(env, key+"="+values[key])
+	}
+	return env
+}
+
+func declaredTools(pluginPath string) ([]string, error) {
+	path := filepath.Join(pluginPath, miseConfigFileName)
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read plugin runtime config: %w", err)
+	}
+	var config struct {
+		Tools map[string]any `toml:"tools"`
+	}
+	if err := toml.Unmarshal(body, &config); err != nil {
+		return nil, fmt.Errorf("parse plugin runtime config: %w", err)
+	}
+	tools := make([]string, 0, len(config.Tools))
+	for name := range config.Tools {
+		tools = append(tools, name)
+	}
+	sort.Strings(tools)
+	return tools, nil
 }
 
 var _ error = MiseNotFoundError{}

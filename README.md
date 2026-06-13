@@ -120,8 +120,8 @@ go run ./cmd/alter mcp
 ```
 
 `alter plugin doctor <name>` performs static layout checks first. If an adapter entrypoint
-exists, it runs adapter `doctor` through the runtime wrapper. Manifest-only plugin
-directories report missing entrypoints as warnings.
+exists, it prints runtime isolation diagnostics. Manifest-only plugin directories report
+missing entrypoints as warnings.
 
 ## Runtime Behavior
 
@@ -153,10 +153,18 @@ MISE_OVERRIDE_CONFIG_FILENAMES=alter.mise.toml
 MISE_GLOBAL_CONFIG_FILE=~/.local/state/alter/mise/config.toml
 MISE_DATA_DIR=~/.local/state/alter/mise/data
 MISE_CACHE_DIR=~/.cache/alter/mise
+MISE_STATE_DIR=~/.local/state/alter/mise/state
 ```
 
 Plugin runtime config lives in `alter.mise.toml`, not `mise.toml`, so mise does not read
 `.tool-versions` or user global mise config during alter-managed plugin execution.
+The environment passed to mise starts from a small allowlist (`HOME`, `PATH`, `TMPDIR`,
+`TERM`, `LANG`, `LC_ALL`) and does not inherit mise/asdf activation variables.
+
+Before `mise install`, alter reads only the plugin workspace `alter.mise.toml`. If it has
+no `[tools]` entries, install is skipped. The `hello` plugin currently declares no
+mise-managed tools, so invoking `hello_greet` must not install unrelated global tools such
+as lua, node, python, ruby, go, pnpm, or poetry.
 
 Prototype intentionally does not auto-trust arbitrary mise configs silently.
 
@@ -208,6 +216,17 @@ Future direction:
 - expose more plugin tools after adapter metadata stabilizes
 - keep MCP registration separate from plugin manifest parsing
 - keep transport-specific code thin
+
+Manual isolation check:
+
+```sh
+./bin/alter plugin doctor hello
+npx -y @modelcontextprotocol/inspector ./bin/alter mcp
+```
+
+In the Inspector, invoking `hello_greet` should not install unrelated tools from
+`~/.tool-versions`, `~/.config/mise/config.toml`, parent-directory mise files, or shell
+activation state.
 
 ## Setup
 

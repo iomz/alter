@@ -1,2 +1,1 @@
-[tools]
-go = "1.25"
+# hello currently requires no mise-managed tools.
