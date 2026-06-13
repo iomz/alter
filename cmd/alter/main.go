@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/iomz/alter/internal/adapter"
 	"github.com/iomz/alter/internal/mcp"
@@ -107,7 +109,8 @@ func newPluginCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return printJSON(diagnostics)
+					printRuntimeDiagnostics(os.Stdout, diagnostics)
+					return nil
 				},
 			},
 		},
@@ -244,4 +247,52 @@ func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+func printRuntimeDiagnostics(out io.Writer, report runtime.DiagnosticReport) {
+	fmt.Fprintf(out, "plugin: %s\n", report.PluginName)
+	fmt.Fprintf(out, "workspace: %s\n", report.PluginWorkspace)
+	fmt.Fprintf(out, "entrypoint: %s\n", report.AdapterEntrypoint)
+	fmt.Fprintf(out, "runtime mode: %s\n", report.RuntimeMode)
+	if report.InstallSkipped {
+		fmt.Fprintln(out, "mise install: skipped")
+	} else {
+		fmt.Fprintln(out, "mise install: required")
+	}
+	if len(report.RuntimeConfig.Tools) == 0 {
+		fmt.Fprintln(out, "declared tools: none")
+	} else {
+		fmt.Fprintf(out, "declared tools: %s\n", strings.Join(report.RuntimeConfig.Tools, ", "))
+	}
+	fmt.Fprintf(out, "%s: %t", "alter.mise.toml", report.MiseConfigExists)
+	if report.RuntimeConfig.Path != "" {
+		fmt.Fprintf(out, " (%s)", report.RuntimeConfig.Path)
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "%s: %t", "alter.tool-versions", report.ToolVersionsExists)
+	if report.RuntimeConfig.ToolVersionsPath != "" {
+		fmt.Fprintf(out, " (%s)", report.RuntimeConfig.ToolVersionsPath)
+	}
+	fmt.Fprintln(out)
+	if report.MiseBinary == "" {
+		fmt.Fprintln(out, "mise binary: not used")
+	} else {
+		fmt.Fprintf(out, "mise binary: %s\n", report.MiseBinary)
+		fmt.Fprintf(out, "mise cwd: %s\n", report.MiseCWD)
+		fmt.Fprintln(out, "mise env:")
+		for _, key := range sortedKeys(report.Environment) {
+			if strings.HasPrefix(key, "MISE_") || strings.HasPrefix(key, "ASDF_") {
+				fmt.Fprintf(out, "  %s=%s\n", key, report.Environment[key])
+			}
+		}
+	}
+}
+
+func sortedKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

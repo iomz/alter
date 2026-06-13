@@ -106,7 +106,6 @@ func TestMiseRunnerSetsIsolatedMiseEnv(t *testing.T) {
 		"MISE_ENV",
 		"MISE_CONFIG_FILE",
 		"MISE_DEFAULT_CONFIG_FILENAME",
-		"MISE_OVERRIDE_TOOL_VERSIONS_FILENAME",
 		"ASDF_CONFIG_FILE",
 		"ASDF_DATA_DIR",
 	} {
@@ -122,11 +121,12 @@ func TestMiseRunnerSetsIsolatedMiseEnv(t *testing.T) {
 
 	env := envMap(miseEnv.Vars)
 	want := map[string]string{
-		"MISE_OVERRIDE_CONFIG_FILENAMES": "alter.mise.toml",
-		"MISE_GLOBAL_CONFIG_FILE":        filepath.Join(home, ".local", "state", "alter", "mise", "config.toml"),
-		"MISE_DATA_DIR":                  filepath.Join(home, ".local", "state", "alter", "mise", "data"),
-		"MISE_CACHE_DIR":                 filepath.Join(home, ".cache", "alter", "mise"),
-		"MISE_STATE_DIR":                 filepath.Join(home, ".local", "state", "alter", "mise", "state"),
+		"MISE_OVERRIDE_CONFIG_FILENAMES":       "alter.mise.toml",
+		"MISE_OVERRIDE_TOOL_VERSIONS_FILENAME": "alter.tool-versions",
+		"MISE_GLOBAL_CONFIG_FILE":              filepath.Join(home, ".local", "state", "alter", "mise", "config.toml"),
+		"MISE_DATA_DIR":                        filepath.Join(home, ".local", "state", "alter", "mise", "data"),
+		"MISE_CACHE_DIR":                       filepath.Join(home, ".cache", "alter", "mise"),
+		"MISE_STATE_DIR":                       filepath.Join(home, ".local", "state", "alter", "mise", "state"),
 	}
 	for key, value := range want {
 		if env[key] != value {
@@ -138,7 +138,6 @@ func TestMiseRunnerSetsIsolatedMiseEnv(t *testing.T) {
 		"MISE_ENV",
 		"MISE_CONFIG_FILE",
 		"MISE_DEFAULT_CONFIG_FILENAME",
-		"MISE_OVERRIDE_TOOL_VERSIONS_FILENAME",
 		"ASDF_CONFIG_FILE",
 		"ASDF_DATA_DIR",
 	} {
@@ -197,6 +196,62 @@ func TestPrepareSkipsMiseInstallWhenNoToolsDeclared(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("mise install ran; marker stat error = %v", err)
+	}
+}
+
+func TestRunUsesDirectModeWhenNoToolsDeclared(t *testing.T) {
+	home := t.TempDir()
+	pluginDir := filepath.Join(home, "plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, ".tool-versions"), []byte("lua 5.4.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "alter.mise.toml"), []byte("# no tools\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entrypoint := filepath.Join(pluginDir, "adapter")
+	if err := os.WriteFile(entrypoint, []byte("#!/bin/sh\nprintf '{\"ok\":true,\"cwd\":\"%s\"}\\n' \"$PWD\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(home, "mise-called")
+	fakeMise := filepath.Join(home, "mise")
+	if err := os.WriteFile(fakeMise, []byte("#!/bin/sh\ntouch "+marker+"\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := testResolver(home, fakeMise, "")
+	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, resolver)
+	out, err := runner.Run(plugin.Plugin{
+		Path: pluginDir,
+		Manifest: plugin.Manifest{
+			Plugin:  plugin.PluginSection{Name: "hello", Entrypoint: "adapter"},
+			Runtime: plugin.RuntimeSection{Manager: "mise"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), pluginDir) {
+		t.Fatalf("Run() output = %s, want cwd %s", out, pluginDir)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("mise exec ran; marker stat error = %v", err)
+	}
+}
+
+func TestDeclaredToolsReadsAlterToolVersions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "alter.tool-versions"), []byte("# plugin tools\nnode 24\npython 3.12\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := declaredTools(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(tools, ",") != "node,python" {
+		t.Fatalf("declaredTools() = %#v, want node and python", tools)
 	}
 }
 

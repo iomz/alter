@@ -137,7 +137,16 @@ paths only and checks:
 If mise is missing, `alter setup mise` explains the bootstrap plan and asks for
 confirmation before installing anything.
 
-For plugin execution, `alter`:
+For plugin execution, `alter` first chooses a runtime mode:
+
+- `direct`: run the adapter entrypoint directly from the plugin workspace
+- `mise`: run through mise only when plugin runtime config declares tools
+
+Direct mode is the default when `alter.mise.toml` is missing or has no `[tools]`
+entries and `alter.tool-versions` is missing or empty. In direct mode, alter does
+not call `mise install` and does not call `mise exec`.
+
+In mise mode, `alter`:
 
 1. discovers mise through the resolver
 2. runs `mise install` inside the plugin workspace
@@ -150,21 +159,31 @@ Plugin runtime execution is isolated from user global mise/asdf configuration. a
 
 ```text
 MISE_OVERRIDE_CONFIG_FILENAMES=alter.mise.toml
+MISE_OVERRIDE_TOOL_VERSIONS_FILENAME=alter.tool-versions
 MISE_GLOBAL_CONFIG_FILE=~/.local/state/alter/mise/config.toml
 MISE_DATA_DIR=~/.local/state/alter/mise/data
 MISE_CACHE_DIR=~/.cache/alter/mise
 MISE_STATE_DIR=~/.local/state/alter/mise/state
 ```
 
-Plugin runtime config lives in `alter.mise.toml`, not `mise.toml`, so mise does not read
-`.tool-versions` or user global mise config during alter-managed plugin execution.
+Plugin runtime config lives in `alter.mise.toml`, not `mise.toml`. If a
+tool-versions style file is needed, it must be named `alter.tool-versions`. This
+prevents user files such as `~/.tool-versions`, parent-directory `.tool-versions`,
+or `~/.config/mise/config.toml` from influencing alter-managed plugin execution.
 The environment passed to mise starts from a small allowlist (`HOME`, `PATH`, `TMPDIR`,
 `TERM`, `LANG`, `LC_ALL`) and does not inherit mise/asdf activation variables.
 
-Before `mise install`, alter reads only the plugin workspace `alter.mise.toml`. If it has
-no `[tools]` entries, install is skipped. The `hello` plugin currently declares no
-mise-managed tools, so invoking `hello_greet` must not install unrelated global tools such
-as lua, node, python, ruby, go, pnpm, or poetry.
+Before `mise install`, alter reads only the plugin workspace `alter.mise.toml` and
+`alter.tool-versions`. If neither declares tools, install is skipped and the adapter
+runs in direct mode. The `hello` plugin currently declares no mise-managed tools, so
+invoking `hello_greet` must not install unrelated global tools such as lua, node,
+python, ruby, go, pnpm, or poetry.
+
+Set `ALTER_LOG=debug` to print runtime decision details to stderr. Debug output includes
+plugin name, workspace, adapter entrypoint, runtime mode, runtime config presence,
+declared tools, install skip status, mise path when used, mise cwd, sanitized mise
+environment values, and exact commands. Debug logging does not print arbitrary inherited
+environment variables.
 
 Prototype intentionally does not auto-trust arbitrary mise configs silently.
 
@@ -227,6 +246,14 @@ npx -y @modelcontextprotocol/inspector ./bin/alter mcp
 In the Inspector, invoking `hello_greet` should not install unrelated tools from
 `~/.tool-versions`, `~/.config/mise/config.toml`, parent-directory mise files, or shell
 activation state.
+
+Expected `hello` doctor output includes:
+
+```text
+runtime mode: direct
+mise install: skipped
+declared tools: none
+```
 
 ## Setup
 

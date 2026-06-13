@@ -17,6 +17,14 @@ import (
 
 const miseBinaryName = "mise"
 const miseConfigFileName = "alter.mise.toml"
+const miseToolVersionsFileName = "alter.tool-versions"
+
+type RuntimeMode string
+
+const (
+	RuntimeModeDirect RuntimeMode = "direct"
+	RuntimeModeMise   RuntimeMode = "mise"
+)
 
 type MiseResolver interface {
 	Resolve() (string, error)
@@ -189,16 +197,23 @@ type MiseEnvironment struct {
 }
 
 type RuntimeConfig struct {
-	Path  string   `json:"path"`
-	Tools []string `json:"tools"`
+	Path             string   `json:"path"`
+	ToolVersionsPath string   `json:"toolVersionsPath"`
+	Tools            []string `json:"tools"`
 }
 
 type DiagnosticReport struct {
-	PluginWorkspace string            `json:"pluginWorkspace"`
-	MiseBinary      string            `json:"miseBinary"`
-	Environment     map[string]string `json:"environment"`
-	RuntimeConfig   RuntimeConfig     `json:"runtimeConfig"`
-	InstallSkipped  bool              `json:"installSkipped"`
+	PluginName         string            `json:"pluginName"`
+	PluginWorkspace    string            `json:"pluginWorkspace"`
+	AdapterEntrypoint  string            `json:"adapterEntrypoint"`
+	RuntimeMode        RuntimeMode       `json:"runtimeMode"`
+	MiseBinary         string            `json:"miseBinary"`
+	MiseCWD            string            `json:"miseCwd"`
+	Environment        map[string]string `json:"environment"`
+	RuntimeConfig      RuntimeConfig     `json:"runtimeConfig"`
+	InstallSkipped     bool              `json:"installSkipped"`
+	MiseConfigExists   bool              `json:"miseConfigExists"`
+	ToolVersionsExists bool              `json:"toolVersionsExists"`
 }
 
 func NewMiseRunner(stdout, stderr io.Writer) *MiseRunner {
@@ -210,25 +225,26 @@ func NewMiseRunnerWithResolver(stdout, stderr io.Writer, resolver MiseResolver) 
 }
 
 func (r *MiseRunner) Prepare(p plugin.Plugin) error {
-	misePath, err := r.resolver.Resolve()
+	decision, err := r.Decide(p)
 	if err != nil {
 		return err
 	}
-	if hasMiseConfig(p.Path) {
-		fmt.Fprintf(r.stderr, "warning: plugin %q has %s; review and trust it before running untrusted code\n", p.Manifest.Plugin.Name, miseConfigFileName)
-	}
-	tools, err := declaredTools(p.Path)
-	if err != nil {
-		return err
-	}
-	if len(tools) == 0 {
+	r.logDecision(p, decision)
+	if decision.Mode == RuntimeModeDirect {
 		return nil
 	}
-	cmd := exec.Command(misePath, "install")
+	if decision.MiseConfigExists {
+		fmt.Fprintf(r.stderr, "warning: plugin %q has %s; review and trust it before running untrusted code\n", p.Manifest.Plugin.Name, miseConfigFileName)
+	}
+	if len(decision.DeclaredTools) == 0 {
+		return nil
+	}
+	cmd := exec.Command(decision.MiseBinary, "install")
 	cmd.Dir = p.Path
 	if err := r.configureMiseCommand(cmd); err != nil {
 		return err
 	}
+	r.debugCommand("mise install", cmd)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -242,22 +258,38 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 	if p.Manifest.Runtime.Manager != "mise" {
 		return nil, fmt.Errorf("unsupported runtime manager %q", p.Manifest.Runtime.Manager)
 	}
-	misePath, err := r.resolver.Resolve()
+	decision, err := r.Decide(p)
 	if err != nil {
 		return nil, err
 	}
+	r.logDecision(p, decision)
 
 	entrypoint := p.Manifest.Plugin.Entrypoint
 	if _, err := os.Stat(filepath.Join(p.Path, entrypoint)); err == nil {
 		entrypoint = "./" + entrypoint
 	}
 
+	if decision.Mode == RuntimeModeDirect {
+		cmd := exec.Command(entrypoint, args...)
+		cmd.Dir = p.Path
+		cmd.Env = flattenEnv(safeBaseEnv())
+		r.debugCommand("direct adapter", cmd)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("adapter execution failed: %w\n%s", err, strings.TrimSpace(stderr.String()))
+		}
+		return out, nil
+	}
+
 	cmdArgs := append([]string{"exec", "--", entrypoint}, args...)
-	cmd := exec.Command(misePath, cmdArgs...)
+	cmd := exec.Command(decision.MiseBinary, cmdArgs...)
 	cmd.Dir = p.Path
 	if err := r.configureMiseCommand(cmd); err != nil {
 		return nil, err
 	}
+	r.debugCommand("mise exec", cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -269,6 +301,11 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 
 func hasMiseConfig(path string) bool {
 	_, err := os.Stat(filepath.Join(path, miseConfigFileName))
+	return err == nil
+}
+
+func hasToolVersionsConfig(path string) bool {
+	_, err := os.Stat(filepath.Join(path, miseToolVersionsFileName))
 	return err == nil
 }
 
@@ -286,6 +323,7 @@ func (r *MiseRunner) BuildMiseEnvironment() (MiseEnvironment, error) {
 	if !ok {
 		values := safeBaseEnv()
 		values["MISE_OVERRIDE_CONFIG_FILENAMES"] = miseConfigFileName
+		values["MISE_OVERRIDE_TOOL_VERSIONS_FILENAME"] = miseToolVersionsFileName
 		return MiseEnvironment{Vars: flattenEnv(values), Values: values}, nil
 	}
 	stateDir, err := resolver.ManagedStateDir()
@@ -315,6 +353,7 @@ func (r *MiseRunner) BuildMiseEnvironment() (MiseEnvironment, error) {
 	}
 	values := safeBaseEnv()
 	values["MISE_OVERRIDE_CONFIG_FILENAMES"] = miseConfigFileName
+	values["MISE_OVERRIDE_TOOL_VERSIONS_FILENAME"] = miseToolVersionsFileName
 	values["MISE_GLOBAL_CONFIG_FILE"] = configFile
 	values["MISE_DATA_DIR"] = dataDir
 	values["MISE_CACHE_DIR"] = cacheDir
@@ -329,35 +368,156 @@ func (r *MiseRunner) BuildMiseEnvironment() (MiseEnvironment, error) {
 	}, nil
 }
 
-func (r *MiseRunner) Diagnostics(p plugin.Plugin) (DiagnosticReport, error) {
-	misePath, err := r.resolver.Resolve()
-	if err != nil {
-		return DiagnosticReport{}, err
-	}
-	env, err := r.BuildMiseEnvironment()
-	if err != nil {
-		return DiagnosticReport{}, err
-	}
+type RuntimeDecision struct {
+	Mode               RuntimeMode
+	DeclaredTools      []string
+	MiseBinary         string
+	MiseConfigPath     string
+	ToolVersionsPath   string
+	MiseConfigExists   bool
+	ToolVersionsExists bool
+	InstallSkipped     bool
+}
+
+func (r *MiseRunner) Decide(p plugin.Plugin) (RuntimeDecision, error) {
 	tools, err := declaredTools(p.Path)
 	if err != nil {
+		return RuntimeDecision{}, err
+	}
+	miseConfigPath := filepath.Join(p.Path, miseConfigFileName)
+	toolVersionsPath := filepath.Join(p.Path, miseToolVersionsFileName)
+	decision := RuntimeDecision{
+		Mode:               RuntimeModeDirect,
+		DeclaredTools:      tools,
+		MiseConfigPath:     miseConfigPath,
+		ToolVersionsPath:   toolVersionsPath,
+		MiseConfigExists:   hasMiseConfig(p.Path),
+		ToolVersionsExists: hasToolVersionsConfig(p.Path),
+		InstallSkipped:     true,
+	}
+	if len(tools) == 0 {
+		return decision, nil
+	}
+	misePath, err := r.resolver.Resolve()
+	if err != nil {
+		return RuntimeDecision{}, err
+	}
+	decision.Mode = RuntimeModeMise
+	decision.MiseBinary = misePath
+	decision.InstallSkipped = false
+	return decision, nil
+}
+
+func (r *MiseRunner) Diagnostics(p plugin.Plugin) (DiagnosticReport, error) {
+	decision, err := r.Decide(p)
+	if err != nil {
 		return DiagnosticReport{}, err
 	}
-	configPath := filepath.Join(p.Path, miseConfigFileName)
-	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		configPath = ""
-	} else if err != nil {
-		return DiagnosticReport{}, fmt.Errorf("inspect plugin runtime config: %w", err)
+	envValues := map[string]string{}
+	if decision.Mode == RuntimeModeMise {
+		env, err := r.BuildMiseEnvironment()
+		if err != nil {
+			return DiagnosticReport{}, err
+		}
+		envValues = env.Values
+	} else {
+		envValues = safeBaseEnv()
+	}
+	configPath := ""
+	if decision.MiseConfigExists {
+		configPath = decision.MiseConfigPath
+	}
+	toolVersionsPath := ""
+	if decision.ToolVersionsExists {
+		toolVersionsPath = decision.ToolVersionsPath
 	}
 	return DiagnosticReport{
-		PluginWorkspace: p.Path,
-		MiseBinary:      misePath,
-		Environment:     env.Values,
+		PluginName:        p.Manifest.Plugin.Name,
+		PluginWorkspace:   p.Path,
+		AdapterEntrypoint: p.Manifest.Plugin.Entrypoint,
+		RuntimeMode:       decision.Mode,
+		MiseBinary:        decision.MiseBinary,
+		MiseCWD:           p.Path,
+		Environment:       envValues,
 		RuntimeConfig: RuntimeConfig{
-			Path:  configPath,
-			Tools: tools,
+			Path:             configPath,
+			ToolVersionsPath: toolVersionsPath,
+			Tools:            decision.DeclaredTools,
 		},
-		InstallSkipped: len(tools) == 0,
+		InstallSkipped:     decision.InstallSkipped,
+		MiseConfigExists:   decision.MiseConfigExists,
+		ToolVersionsExists: decision.ToolVersionsExists,
 	}, nil
+}
+
+func (r *MiseRunner) logDecision(p plugin.Plugin, decision RuntimeDecision) {
+	if os.Getenv("ALTER_LOG") != "debug" {
+		return
+	}
+	envValues := safeBaseEnv()
+	if decision.Mode == RuntimeModeMise {
+		if env, err := r.BuildMiseEnvironment(); err == nil {
+			envValues = env.Values
+		}
+	}
+	fmt.Fprintf(r.stderr, "alter debug: plugin=%s\n", p.Manifest.Plugin.Name)
+	fmt.Fprintf(r.stderr, "alter debug: plugin_workspace=%s\n", p.Path)
+	fmt.Fprintf(r.stderr, "alter debug: adapter_entrypoint=%s\n", p.Manifest.Plugin.Entrypoint)
+	fmt.Fprintf(r.stderr, "alter debug: runtime_mode=%s\n", decision.Mode)
+	fmt.Fprintf(r.stderr, "alter debug: %s exists=%t\n", miseConfigFileName, decision.MiseConfigExists)
+	fmt.Fprintf(r.stderr, "alter debug: %s exists=%t\n", miseToolVersionsFileName, decision.ToolVersionsExists)
+	fmt.Fprintf(r.stderr, "alter debug: declared_runtime_tools=%s\n", formatTools(decision.DeclaredTools))
+	fmt.Fprintf(r.stderr, "alter debug: mise_install_skipped=%t\n", decision.InstallSkipped)
+	fmt.Fprintf(r.stderr, "alter debug: mise_binary=%s\n", valueOrNone(decision.MiseBinary))
+	fmt.Fprintf(r.stderr, "alter debug: mise_cwd=%s\n", p.Path)
+	for _, key := range sortedKeys(envValues) {
+		if strings.HasPrefix(key, "MISE_") || strings.HasPrefix(key, "ASDF_") {
+			fmt.Fprintf(r.stderr, "alter debug: env %s=%s\n", key, envValues[key])
+		}
+	}
+}
+
+func (r *MiseRunner) debugCommand(label string, cmd *exec.Cmd) {
+	if os.Getenv("ALTER_LOG") != "debug" {
+		return
+	}
+	fmt.Fprintf(r.stderr, "alter debug: command[%s]=%s\n", label, shellQuoteCommand(cmd.Args))
+	fmt.Fprintf(r.stderr, "alter debug: command[%s].cwd=%s\n", label, cmd.Dir)
+}
+
+func formatTools(tools []string) string {
+	if len(tools) == 0 {
+		return "none"
+	}
+	return strings.Join(tools, ",")
+}
+
+func valueOrNone(value string) string {
+	if value == "" {
+		return "none"
+	}
+	return value
+}
+
+func sortedKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func shellQuoteCommand(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "" || strings.ContainsAny(arg, " \t\n'\"\\$") {
+			quoted = append(quoted, "'"+strings.ReplaceAll(arg, "'", "'\\''")+"'")
+			continue
+		}
+		quoted = append(quoted, arg)
+	}
+	return strings.Join(quoted, " ")
 }
 
 func safeBaseEnv() map[string]string {
@@ -384,22 +544,42 @@ func flattenEnv(values map[string]string) []string {
 }
 
 func declaredTools(pluginPath string) ([]string, error) {
+	names := make(map[string]struct{})
 	path := filepath.Join(pluginPath, miseConfigFileName)
 	body, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
+	if err == nil {
+		var config struct {
+			Tools map[string]any `toml:"tools"`
+		}
+		if err := toml.Unmarshal(body, &config); err != nil {
+			return nil, fmt.Errorf("parse plugin runtime config: %w", err)
+		}
+		for name := range config.Tools {
+			names[name] = struct{}{}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read plugin runtime config: %w", err)
 	}
-	var config struct {
-		Tools map[string]any `toml:"tools"`
+
+	toolVersionsPath := filepath.Join(pluginPath, miseToolVersionsFileName)
+	toolVersionsBody, err := os.ReadFile(toolVersionsPath)
+	if err == nil {
+		for _, line := range strings.Split(string(toolVersionsBody), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				names[fields[0]] = struct{}{}
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read plugin runtime tool versions: %w", err)
 	}
-	if err := toml.Unmarshal(body, &config); err != nil {
-		return nil, fmt.Errorf("parse plugin runtime config: %w", err)
-	}
-	tools := make([]string, 0, len(config.Tools))
-	for name := range config.Tools {
+
+	tools := make([]string, 0, len(names))
+	for name := range names {
 		tools = append(tools, name)
 	}
 	sort.Strings(tools)
