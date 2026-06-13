@@ -4,14 +4,15 @@ A local/private tool control plane for managed CLI plugins and MCP exposure.
 
 `alter` is not a business-logic tool. It discovers and inspects plugin adapters. Actual tools such as `ingest` or `suuntool` do not need to know anything about `alter`, MCP, manifests, or schemas. Adapter plugins translate those tools into the alter contract.
 
-No daemon runs.
+No daemon runs. MCP mode is `alter mcp` over stdio.
 
 ## Architecture
 
-- `alter`: CLI entrypoint built on `urfave/cli/v3`, plugin discovery, inspection, runtime discovery, and adapter invocation
+- `alter`: CLI entrypoint built on `urfave/cli/v3`, plugin discovery, inspection, runtime discovery, adapter invocation, and MCP stdio serving
 - `internal/runtime`: runtime discovery and execution boundary
 - `internal/plugin`: typed plugin manifest parsing, discovery, inspection, and static layout checks
 - `internal/adapter`: adapter execution and output normalization
+- `internal/mcp`: MCP server setup, tool registration, and adapter-backed tool calls
 - `mise`: plugin-local runtime manager
 - `alter-foo`: adapter owned by `plugins/foo`
 - `foo`: actual external tool wrapped by adapter
@@ -114,6 +115,7 @@ go run ./cmd/alter plugin list
 go run ./cmd/alter plugin inspect hello
 go run ./cmd/alter plugin doctor hello
 go run ./cmd/alter hello greet --name iomz
+go run ./cmd/alter mcp
 ```
 
 `alter plugin doctor <name>` performs static layout checks first. If an adapter entrypoint
@@ -162,8 +164,37 @@ alter
 
 Adapter internals may call upstream tools. That call remains adapter-owned.
 
-Generated MCP exposure is future work. It should remain outside manifest parsing and
-static discovery logic.
+Generated MCP exposure is future work. Current MCP registration is explicit and should
+remain outside manifest parsing and static discovery logic.
+
+## MCP
+
+`alter mcp` serves MCP over stdio using `modelcontextprotocol/go-sdk`.
+
+Current exposed tool:
+
+```text
+hello_greet
+```
+
+Tool registration is intentionally explicit. The current path is:
+
+```text
+plugin metadata
+-> tool registration
+-> MCP exposure
+-> adapter invocation
+```
+
+`hello_greet` calls the `hello` adapter's `greet` tool and returns adapter JSON as both
+text content and structured content.
+
+Future direction:
+
+- derive MCP tools from adapter metadata
+- expose more plugin tools after adapter metadata stabilizes
+- keep MCP registration separate from plugin manifest parsing
+- keep transport-specific code thin
 
 ## Setup
 

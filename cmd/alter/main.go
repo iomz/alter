@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/iomz/alter/internal/adapter"
+	"github.com/iomz/alter/internal/mcp"
 	"github.com/iomz/alter/internal/plugin"
 	"github.com/iomz/alter/internal/runtime"
 	"github.com/iomz/alter/internal/ui"
@@ -29,6 +31,7 @@ func newCommand() *cli.Command {
 			newPluginCommand(),
 			newSetupCommand(),
 			newHelloCommand(),
+			newMCPCommand(),
 		},
 	}
 }
@@ -191,6 +194,20 @@ func newHelloCommand() *cli.Command {
 	}
 }
 
+func newMCPCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "mcp",
+		Usage: "serve MCP over stdio",
+		Action: func(ctx context.Context, _ *cli.Command) error {
+			executor, err := executorContextWithRuntimeOutput(io.Discard, os.Stderr)
+			if err != nil {
+				return err
+			}
+			return mcp.Serve(ctx, executor)
+		},
+	}
+}
+
 func pluginContext() (*plugin.Store, error) {
 	root, err := plugin.FindRepoRoot()
 	if err != nil {
@@ -200,11 +217,15 @@ func pluginContext() (*plugin.Store, error) {
 }
 
 func executorContext() (*adapter.Executor, error) {
+	return executorContextWithRuntimeOutput(os.Stdout, os.Stderr)
+}
+
+func executorContextWithRuntimeOutput(stdout, stderr io.Writer) (*adapter.Executor, error) {
 	store, err := pluginContext()
 	if err != nil {
 		return nil, err
 	}
-	return adapter.NewExecutor(store, runtime.NewMiseRunner(os.Stdout, os.Stderr)), nil
+	return adapter.NewExecutor(store, runtime.NewMiseRunner(stdout, stderr)), nil
 }
 
 func printJSON(v any) error {
