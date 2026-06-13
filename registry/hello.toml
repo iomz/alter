@@ -1,0 +1,4 @@
+[plugin]
+name = "hello"
+path = "plugins/hello"
+description = "Example alter plugin"

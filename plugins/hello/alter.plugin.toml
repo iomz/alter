@@ -1,0 +1,16 @@
+[plugin]
+name = "hello"
+description = "Example alter plugin"
+maintainer = "iomz"
+entrypoint = "alter-hello"
+
+[upstream]
+name = "hello"
+repository = ""
+
+[runtime]
+manager = "mise"
+
+[mcp]
+enabled = true
+namespace = "hello"
