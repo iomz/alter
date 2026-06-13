@@ -23,6 +23,8 @@ type HelloGreetArgs struct {
 	Name string `json:"name" jsonschema:"Name to greet"`
 }
 
+type TestRuntimeNodeVersionArgs struct{}
+
 func NewServer(invoker Invoker) *mcpsdk.Server {
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "alter",
@@ -43,12 +45,20 @@ func RegisterTools(server *mcpsdk.Server, invoker Invoker, tools []ToolMetadata)
 }
 
 func DefaultTools() []ToolMetadata {
-	return []ToolMetadata{{
-		Name:        "hello_greet",
-		Description: "Return greeting JSON from hello adapter",
-		Plugin:      "hello",
-		Tool:        "greet",
-	}}
+	return []ToolMetadata{
+		{
+			Name:        "hello_greet",
+			Description: "Return greeting JSON from hello adapter",
+			Plugin:      "hello",
+			Tool:        "greet",
+		},
+		{
+			Name:        "test_runtime_node_version",
+			Description: "Return Node.js version from test-runtime adapter",
+			Plugin:      "test-runtime",
+			Tool:        "node-version",
+		},
+	}
 }
 
 func registerTool(server *mcpsdk.Server, invoker Invoker, tool ToolMetadata) {
@@ -59,6 +69,26 @@ func registerTool(server *mcpsdk.Server, invoker Invoker, tool ToolMetadata) {
 			Description: tool.Description,
 		}, func(_ context.Context, _ *mcpsdk.CallToolRequest, args HelloGreetArgs) (*mcpsdk.CallToolResult, any, error) {
 			out, err := invoker.Invoke(tool.Plugin, tool.Tool, map[string]any{"name": args.Name})
+			if err != nil {
+				return nil, nil, err
+			}
+			result, err := structuredOutput(out)
+			if err != nil {
+				return nil, nil, err
+			}
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{
+					&mcpsdk.TextContent{Text: string(out)},
+				},
+				StructuredContent: result,
+			}, nil, nil
+		})
+	case "test_runtime_node_version":
+		mcpsdk.AddTool(server, &mcpsdk.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}, func(_ context.Context, _ *mcpsdk.CallToolRequest, _ TestRuntimeNodeVersionArgs) (*mcpsdk.CallToolResult, any, error) {
+			out, err := invoker.Invoke(tool.Plugin, tool.Tool, map[string]any{})
 			if err != nil {
 				return nil, nil, err
 			}

@@ -33,6 +33,7 @@ func newCommand() *cli.Command {
 			newPluginCommand(),
 			newSetupCommand(),
 			newHelloCommand(),
+			newTestRuntimeCommand(),
 			newMCPCommand(),
 		},
 	}
@@ -209,6 +210,31 @@ func newHelloCommand() *cli.Command {
 	}
 }
 
+func newTestRuntimeCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "test-runtime",
+		Usage: "run mise runtime isolation test adapter",
+		Commands: []*cli.Command{
+			{
+				Name:  "node-version",
+				Usage: "return Node.js version resolved through mise mode",
+				Action: func(context.Context, *cli.Command) error {
+					executor, err := executorContext()
+					if err != nil {
+						return err
+					}
+					out, err := executor.Invoke("test-runtime", "node-version", map[string]any{})
+					if err != nil {
+						return err
+					}
+					fmt.Print(string(out))
+					return nil
+				},
+			},
+		},
+	}
+}
+
 func newMCPCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "mcp",
@@ -279,6 +305,7 @@ func printRuntimeDiagnostics(out io.Writer, report runtime.DiagnosticReport) {
 	} else {
 		fmt.Fprintf(out, "mise binary: %s\n", report.MiseBinary)
 		fmt.Fprintf(out, "mise cwd: %s\n", report.MiseCWD)
+		fmt.Fprintln(out, "user/global mise/asdf config: ignored")
 		fmt.Fprintln(out, "mise env:")
 		for _, key := range sortedKeys(report.Environment) {
 			if strings.HasPrefix(key, "MISE_") || strings.HasPrefix(key, "ASDF_") {

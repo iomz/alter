@@ -324,6 +324,9 @@ func (r *MiseRunner) BuildMiseEnvironment() (MiseEnvironment, error) {
 		values := safeBaseEnv()
 		values["MISE_OVERRIDE_CONFIG_FILENAMES"] = miseConfigFileName
 		values["MISE_OVERRIDE_TOOL_VERSIONS_FILENAME"] = miseToolVersionsFileName
+		values["MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES"] = miseToolVersionsFileName
+		values["MISE_LEGACY_VERSION_FILE"] = "false"
+		values["MISE_ASDF_COMPAT"] = "false"
 		return MiseEnvironment{Vars: flattenEnv(values), Values: values}, nil
 	}
 	stateDir, err := resolver.ManagedStateDir()
@@ -354,6 +357,9 @@ func (r *MiseRunner) BuildMiseEnvironment() (MiseEnvironment, error) {
 	values := safeBaseEnv()
 	values["MISE_OVERRIDE_CONFIG_FILENAMES"] = miseConfigFileName
 	values["MISE_OVERRIDE_TOOL_VERSIONS_FILENAME"] = miseToolVersionsFileName
+	values["MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES"] = miseToolVersionsFileName
+	values["MISE_LEGACY_VERSION_FILE"] = "false"
+	values["MISE_ASDF_COMPAT"] = "false"
 	values["MISE_GLOBAL_CONFIG_FILE"] = configFile
 	values["MISE_DATA_DIR"] = dataDir
 	values["MISE_CACHE_DIR"] = cacheDir
@@ -554,8 +560,8 @@ func declaredTools(pluginPath string) ([]string, error) {
 		if err := toml.Unmarshal(body, &config); err != nil {
 			return nil, fmt.Errorf("parse plugin runtime config: %w", err)
 		}
-		for name := range config.Tools {
-			names[name] = struct{}{}
+		for name, version := range config.Tools {
+			names[toolLabel(name, version)] = struct{}{}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read plugin runtime config: %w", err)
@@ -571,7 +577,11 @@ func declaredTools(pluginPath string) ([]string, error) {
 			}
 			fields := strings.Fields(line)
 			if len(fields) > 0 {
-				names[fields[0]] = struct{}{}
+				label := fields[0]
+				if len(fields) > 1 {
+					label = fields[0] + "@" + fields[1]
+				}
+				names[label] = struct{}{}
 			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -584,6 +594,20 @@ func declaredTools(pluginPath string) ([]string, error) {
 	}
 	sort.Strings(tools)
 	return tools, nil
+}
+
+func toolLabel(name string, value any) string {
+	switch v := value.(type) {
+	case string:
+		if v != "" {
+			return name + "@" + v
+		}
+	case fmt.Stringer:
+		if v.String() != "" {
+			return name + "@" + v.String()
+		}
+	}
+	return name
 }
 
 var _ error = MiseNotFoundError{}

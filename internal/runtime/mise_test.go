@@ -121,12 +121,15 @@ func TestMiseRunnerSetsIsolatedMiseEnv(t *testing.T) {
 
 	env := envMap(miseEnv.Vars)
 	want := map[string]string{
-		"MISE_OVERRIDE_CONFIG_FILENAMES":       "alter.mise.toml",
-		"MISE_OVERRIDE_TOOL_VERSIONS_FILENAME": "alter.tool-versions",
-		"MISE_GLOBAL_CONFIG_FILE":              filepath.Join(home, ".local", "state", "alter", "mise", "config.toml"),
-		"MISE_DATA_DIR":                        filepath.Join(home, ".local", "state", "alter", "mise", "data"),
-		"MISE_CACHE_DIR":                       filepath.Join(home, ".cache", "alter", "mise"),
-		"MISE_STATE_DIR":                       filepath.Join(home, ".local", "state", "alter", "mise", "state"),
+		"MISE_OVERRIDE_CONFIG_FILENAMES":        "alter.mise.toml",
+		"MISE_OVERRIDE_TOOL_VERSIONS_FILENAME":  "alter.tool-versions",
+		"MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES": "alter.tool-versions",
+		"MISE_LEGACY_VERSION_FILE":              "false",
+		"MISE_ASDF_COMPAT":                      "false",
+		"MISE_GLOBAL_CONFIG_FILE":               filepath.Join(home, ".local", "state", "alter", "mise", "config.toml"),
+		"MISE_DATA_DIR":                         filepath.Join(home, ".local", "state", "alter", "mise", "data"),
+		"MISE_CACHE_DIR":                        filepath.Join(home, ".cache", "alter", "mise"),
+		"MISE_STATE_DIR":                        filepath.Join(home, ".local", "state", "alter", "mise", "state"),
 	}
 	for key, value := range want {
 		if env[key] != value {
@@ -250,8 +253,8 @@ func TestDeclaredToolsReadsAlterToolVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(tools, ",") != "node,python" {
-		t.Fatalf("declaredTools() = %#v, want node and python", tools)
+	if strings.Join(tools, ",") != "node@24,python@3.12" {
+		t.Fatalf("declaredTools() = %#v, want node@24 and python@3.12", tools)
 	}
 }
 

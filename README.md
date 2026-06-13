@@ -69,8 +69,23 @@ plugins/hello/
   alter.plugin.toml
   alter.mise.toml
   alter-hello
-  cmd/alter-hello/main.go
+
+plugins/test-runtime/
+  alter.plugin.toml
+  alter.mise.toml
+  alter-test-runtime
 ```
+
+`test-runtime` is a dedicated mise isolation proof plugin. It explicitly declares
+only Node.js in `alter.mise.toml`:
+
+```toml
+[tools]
+node = "24"
+```
+
+It exists to verify that mise mode installs only plugin-declared runtimes and ignores
+user/global mise or asdf state before real plugins such as `ingest` are wired in.
 
 ## Adapter Contract
 
@@ -115,7 +130,9 @@ go run ./cmd/alter setup cleanup
 go run ./cmd/alter plugin list
 go run ./cmd/alter plugin inspect hello
 go run ./cmd/alter plugin doctor hello
+go run ./cmd/alter plugin doctor test-runtime
 go run ./cmd/alter hello greet --name iomz
+ALTER_LOG=debug go run ./cmd/alter test-runtime node-version
 go run ./cmd/alter mcp
 ```
 
@@ -160,6 +177,9 @@ Plugin runtime execution is isolated from user global mise/asdf configuration. a
 ```text
 MISE_OVERRIDE_CONFIG_FILENAMES=alter.mise.toml
 MISE_OVERRIDE_TOOL_VERSIONS_FILENAME=alter.tool-versions
+MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=alter.tool-versions
+MISE_LEGACY_VERSION_FILE=false
+MISE_ASDF_COMPAT=false
 MISE_GLOBAL_CONFIG_FILE=~/.local/state/alter/mise/config.toml
 MISE_DATA_DIR=~/.local/state/alter/mise/data
 MISE_CACHE_DIR=~/.cache/alter/mise
@@ -170,6 +190,9 @@ Plugin runtime config lives in `alter.mise.toml`, not `mise.toml`. If a
 tool-versions style file is needed, it must be named `alter.tool-versions`. This
 prevents user files such as `~/.tool-versions`, parent-directory `.tool-versions`,
 or `~/.config/mise/config.toml` from influencing alter-managed plugin execution.
+Both the singular and plural tool-versions override environment names are set because
+current mise settings expose the plural form while the alter policy names the singular
+form.
 The environment passed to mise starts from a small allowlist (`HOME`, `PATH`, `TMPDIR`,
 `TERM`, `LANG`, `LC_ALL`) and does not inherit mise/asdf activation variables.
 
@@ -178,6 +201,11 @@ Before `mise install`, alter reads only the plugin workspace `alter.mise.toml` a
 runs in direct mode. The `hello` plugin currently declares no mise-managed tools, so
 invoking `hello_greet` must not install unrelated global tools such as lua, node,
 python, ruby, go, pnpm, or poetry.
+
+The `test-runtime` plugin declares exactly one mise-managed tool, `node@24`, so its
+runtime mode is `mise`. Running `alter test-runtime node-version` should install or
+reuse only that declared Node.js runtime, then execute the adapter through `mise exec`
+inside `plugins/test-runtime`.
 
 Set `ALTER_LOG=debug` to print runtime decision details to stderr. Debug output includes
 plugin name, workspace, adapter entrypoint, runtime mode, runtime config presence,
@@ -215,6 +243,7 @@ Current exposed tool:
 
 ```text
 hello_greet
+test_runtime_node_version
 ```
 
 Tool registration is intentionally explicit. The current path is:
@@ -226,8 +255,9 @@ plugin metadata
 -> adapter invocation
 ```
 
-`hello_greet` calls the `hello` adapter's `greet` tool and returns adapter JSON as both
-text content and structured content.
+`hello_greet` calls the `hello` adapter's `greet` tool and `test_runtime_node_version`
+calls the `test-runtime` adapter's `node-version` tool. Both return adapter JSON as text
+content and structured content.
 
 Future direction:
 
@@ -240,6 +270,8 @@ Manual isolation check:
 
 ```sh
 ./bin/alter plugin doctor hello
+./bin/alter plugin doctor test-runtime
+ALTER_LOG=debug ./bin/alter test-runtime node-version
 npx -y @modelcontextprotocol/inspector ./bin/alter mcp
 ```
 
@@ -254,6 +286,19 @@ runtime mode: direct
 mise install: skipped
 declared tools: none
 ```
+
+Expected `test-runtime` doctor output includes:
+
+```text
+runtime mode: mise
+mise install: required
+declared tools: node@24
+user/global mise/asdf config: ignored
+```
+
+Invoking `test_runtime_node_version` in MCP Inspector should return a Node.js version
+and must not install Python, Ruby, Go, Lua, pnpm, Poetry, or anything from user/global
+mise or asdf config.
 
 ## Setup
 

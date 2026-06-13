@@ -1,0 +1,16 @@
+[plugin]
+name = "test-runtime"
+description = "Mise isolation test plugin"
+maintainer = "iomz"
+entrypoint = "alter-test-runtime"
+
+[upstream]
+name = "test-runtime"
+repository = ""
+
+[runtime]
+manager = "mise"
+
+[mcp]
+enabled = true
+namespace = "test_runtime"
