@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/iomz/alter/internal/plugin"
+	"github.com/iomz/alter/internal/trust"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -214,6 +215,7 @@ type DiagnosticReport struct {
 	InstallSkipped     bool              `json:"installSkipped"`
 	MiseConfigExists   bool              `json:"miseConfigExists"`
 	ToolVersionsExists bool              `json:"toolVersionsExists"`
+	Trust              trust.Evaluation  `json:"trust"`
 }
 
 func NewMiseRunner(stdout, stderr io.Writer) *MiseRunner {
@@ -233,8 +235,8 @@ func (r *MiseRunner) Prepare(p plugin.Plugin) error {
 	if decision.Mode == RuntimeModeDirect {
 		return nil
 	}
-	if decision.MiseConfigExists {
-		r.printRuntimeConfigNotice(p, decision)
+	if err := r.ensureTrusted(p); err != nil {
+		return err
 	}
 	if len(decision.DeclaredTools) == 0 {
 		return nil
@@ -254,19 +256,18 @@ func (r *MiseRunner) Prepare(p plugin.Plugin) error {
 	return nil
 }
 
-func (r *MiseRunner) printRuntimeConfigNotice(p plugin.Plugin, decision RuntimeDecision) {
-	fmt.Fprintf(r.stderr, "warning: plugin %q declares mise-managed runtime config\n", p.Manifest.Plugin.Name)
-	fmt.Fprintf(r.stderr, "  config: %s\n", decision.MiseConfigPath)
-	fmt.Fprintf(r.stderr, "  declared tools: %s\n", formatTools(decision.DeclaredTools))
-	fmt.Fprintf(r.stderr, "  what it means: alter will let mise install or reuse these tool versions, then run the plugin adapter from this workspace.\n")
-	fmt.Fprintf(r.stderr, "  what you are trusting: this local plugin directory, its %s, and its adapter entrypoint %q.\n", miseConfigFileName, p.Manifest.Plugin.Entrypoint)
-	fmt.Fprintf(r.stderr, "  running code: mise may download tool archives; the adapter process may execute local commands with your user permissions.\n")
-	fmt.Fprintf(r.stderr, "  how to trust: inspect %s, %s, and %s; confirm declared tools and adapter code match your expectation; then run the command again. If not trusted, do not run this plugin.\n",
-		filepath.Join(p.Path, plugin.ManifestFileName),
-		decision.MiseConfigPath,
-		filepath.Join(p.Path, p.Manifest.Plugin.Entrypoint),
-	)
-	fmt.Fprintf(r.stderr, "  note: current prototype has no persistent trust store; this notice is informational.\n")
+type TrustRequiredError struct {
+	Name   string
+	Status trust.Status
+	Reason string
+}
+
+func (e TrustRequiredError) Error() string {
+	message := fmt.Sprintf("plugin %q requires trust before mise runtime execution; run `alter plugin trust %s`", e.Name, e.Name)
+	if e.Status == trust.StatusInvalidated && e.Reason != "" {
+		message += "; trust invalidated: " + e.Reason
+	}
+	return message
 }
 
 func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
@@ -297,6 +298,9 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 		}
 		return out, nil
 	}
+	if err := r.ensureTrusted(p); err != nil {
+		return nil, err
+	}
 
 	cmdArgs := append([]string{"exec", "--", entrypoint}, args...)
 	cmd := exec.Command(decision.MiseBinary, cmdArgs...)
@@ -312,6 +316,18 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("mise exec failed: %w\n%s", err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+func (r *MiseRunner) ensureTrusted(p plugin.Plugin) error {
+	eval, err := trust.Evaluate(p)
+	if err != nil {
+		return err
+	}
+	r.logTrustEvaluation(eval)
+	if eval.Status != trust.StatusTrusted {
+		return TrustRequiredError{Name: p.Manifest.Plugin.Name, Status: eval.Status, Reason: eval.Reason}
+	}
+	return nil
 }
 
 func hasMiseConfig(path string) bool {
@@ -444,6 +460,15 @@ func (r *MiseRunner) Diagnostics(p plugin.Plugin) (DiagnosticReport, error) {
 	} else {
 		envValues = safeBaseEnv()
 	}
+	trustEval, err := trust.Evaluate(p)
+	if err != nil {
+		return DiagnosticReport{}, err
+	}
+	if decision.Mode == RuntimeModeDirect {
+		trustEval.Status = trust.StatusNotRequired
+		trustEval.Reason = "direct runtime has no declared tools"
+	}
+	r.logTrustEvaluation(trustEval)
 	configPath := ""
 	if decision.MiseConfigExists {
 		configPath = decision.MiseConfigPath
@@ -468,6 +493,7 @@ func (r *MiseRunner) Diagnostics(p plugin.Plugin) (DiagnosticReport, error) {
 		InstallSkipped:     decision.InstallSkipped,
 		MiseConfigExists:   decision.MiseConfigExists,
 		ToolVersionsExists: decision.ToolVersionsExists,
+		Trust:              trustEval,
 	}, nil
 }
 
@@ -495,6 +521,31 @@ func (r *MiseRunner) logDecision(p plugin.Plugin, decision RuntimeDecision) {
 		if strings.HasPrefix(key, "MISE_") || strings.HasPrefix(key, "ASDF_") {
 			fmt.Fprintf(r.stderr, "alter debug: env %s=%s\n", key, envValues[key])
 		}
+	}
+}
+
+func (r *MiseRunner) logTrustEvaluation(eval trust.Evaluation) {
+	if os.Getenv("ALTER_LOG") != "debug" {
+		return
+	}
+	fmt.Fprintf(r.stderr, "alter debug: trust_status=%s\n", eval.Status)
+	fmt.Fprintf(r.stderr, "alter debug: trust_reason=%s\n", eval.Reason)
+	fmt.Fprintf(r.stderr, "alter debug: trust_store=%s\n", eval.StorePath)
+	for _, path := range eval.FilesHashed {
+		fmt.Fprintf(r.stderr, "alter debug: trust_file_hashed=%s\n", path)
+	}
+	fmt.Fprintf(r.stderr, "alter debug: trust_current_manifest_hash=%s\n", eval.Current.ManifestHash)
+	fmt.Fprintf(r.stderr, "alter debug: trust_current_mise_hash=%s\n", valueOrNone(eval.Current.MiseHash))
+	fmt.Fprintf(r.stderr, "alter debug: trust_current_tool_versions_hash=%s\n", valueOrNone(eval.Current.ToolVersionsHash))
+	fmt.Fprintf(r.stderr, "alter debug: trust_current_entrypoint_hash=%s\n", valueOrNone(eval.Current.EntrypointHash))
+	if eval.Stored != nil {
+		fmt.Fprintf(r.stderr, "alter debug: trust_stored_manifest_hash=%s\n", eval.Stored.ManifestHash)
+		fmt.Fprintf(r.stderr, "alter debug: trust_stored_mise_hash=%s\n", valueOrNone(eval.Stored.MiseHash))
+		fmt.Fprintf(r.stderr, "alter debug: trust_stored_tool_versions_hash=%s\n", valueOrNone(eval.Stored.ToolVersionsHash))
+		fmt.Fprintf(r.stderr, "alter debug: trust_stored_entrypoint_hash=%s\n", valueOrNone(eval.Stored.EntrypointHash))
+	}
+	for _, mismatch := range eval.Mismatches {
+		fmt.Fprintf(r.stderr, "alter debug: trust_mismatch=%s\n", mismatch)
 	}
 }
 

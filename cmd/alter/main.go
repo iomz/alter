@@ -12,6 +12,7 @@ import (
 	"github.com/iomz/alter/internal/mcp"
 	"github.com/iomz/alter/internal/plugin"
 	"github.com/iomz/alter/internal/runtime"
+	"github.com/iomz/alter/internal/trust"
 	"github.com/iomz/alter/internal/ui"
 	cli "github.com/urfave/cli/v3"
 )
@@ -118,8 +119,90 @@ func newPluginCommand() *cli.Command {
 					return nil
 				},
 			},
+			{
+				Name:      "trust",
+				Usage:     "trust current plugin runtime fingerprints",
+				ArgsUsage: "<name>",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return errors.New("usage: alter plugin trust <name>")
+					}
+					p, diagnostics, err := pluginDiagnostics(cmd.Args().First())
+					if err != nil {
+						return err
+					}
+					if diagnostics.RuntimeMode == runtime.RuntimeModeDirect && diagnostics.InstallSkipped {
+						ui.PrintTrustNotRequired(os.Stdout, p)
+						return nil
+					}
+					ui.PrintTrustReview(os.Stdout, p, diagnostics)
+					confirmed, err := ui.ConfirmPluginTrust(os.Stdout, os.Stdin, p.Manifest.Plugin.Name)
+					if err != nil {
+						return err
+					}
+					if !confirmed {
+						fmt.Fprintln(os.Stdout, ui.Warning("cancelled"), "plugin trust unchanged")
+						return nil
+					}
+					record, storePath, err := trust.Trust(p)
+					if err != nil {
+						return err
+					}
+					ui.PrintTrustSaved(os.Stdout, record, storePath)
+					return nil
+				},
+			},
+			{
+				Name:      "untrust",
+				Usage:     "remove plugin trust record",
+				ArgsUsage: "<name>",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return errors.New("usage: alter plugin untrust <name>")
+					}
+					removed, storePath, err := trust.Untrust(cmd.Args().First())
+					if err != nil {
+						return err
+					}
+					ui.PrintTrustRemoved(os.Stdout, cmd.Args().First(), storePath, removed)
+					return nil
+				},
+			},
+			{
+				Name:      "trust-status",
+				Usage:     "show plugin trust status",
+				ArgsUsage: "<name>",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return errors.New("usage: alter plugin trust-status <name>")
+					}
+					_, diagnostics, err := pluginDiagnostics(cmd.Args().First())
+					if err != nil {
+						return err
+					}
+					ui.PrintRuntimeDiagnostics(os.Stdout, diagnostics)
+					return nil
+				},
+			},
 		},
 	}
+}
+
+func pluginDiagnostics(name string) (plugin.Plugin, runtime.DiagnosticReport, error) {
+	store, err := pluginContext()
+	if err != nil {
+		return plugin.Plugin{}, runtime.DiagnosticReport{}, err
+	}
+	p, err := store.Load(name)
+	if err != nil {
+		return plugin.Plugin{}, runtime.DiagnosticReport{}, err
+	}
+	runner := runtime.NewMiseRunner(os.Stdout, os.Stderr)
+	diagnostics, err := runner.Diagnostics(p)
+	if err != nil {
+		return plugin.Plugin{}, runtime.DiagnosticReport{}, err
+	}
+	return p, diagnostics, nil
 }
 
 func newSetupCommand() *cli.Command {

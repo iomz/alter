@@ -8,6 +8,7 @@ import (
 
 	"github.com/iomz/alter/internal/plugin"
 	"github.com/iomz/alter/internal/runtime"
+	"github.com/iomz/alter/internal/trust"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/huh"
@@ -78,6 +79,19 @@ func ConfirmMiseBootstrap(out io.Writer, in io.Reader) (bool, error) {
 		Title("Install mise into alter-managed storage?").
 		Affirmative("Install").
 		Negative("Cancel").
+		Value(&confirmed)
+	confirm.WithTheme(promptTheme)
+	err := confirm.RunAccessible(out, in)
+	return confirmed, err
+}
+
+func ConfirmPluginTrust(out io.Writer, in io.Reader, name string) (bool, error) {
+	confirmed := false
+	confirm := huh.NewConfirm().
+		Title(fmt.Sprintf("Trust plugin %q?", name)).
+		Description("Trust stores current file fingerprints and allows mise-managed runtime execution until a fingerprint changes.").
+		Affirmative("Trust").
+		Negative("Abort").
 		Value(&confirmed)
 	confirm.WithTheme(promptTheme)
 	err := confirm.RunAccessible(out, in)
@@ -229,6 +243,9 @@ func PrintRuntimeDiagnostics(out io.Writer, report runtime.DiagnosticReport) {
 		{"declared tools", toolsValue(report.RuntimeConfig.Tools)},
 	})
 
+	printSection(out, "trust")
+	PrintTrustRows(out, report.Trust)
+
 	printSection(out, "config")
 	printRows(out, [][2]string{
 		{"alter.mise.toml", configValue(report.MiseConfigExists, report.RuntimeConfig.Path)},
@@ -255,6 +272,99 @@ func PrintRuntimeDiagnostics(out io.Writer, report runtime.DiagnosticReport) {
 		}
 	}
 	printRows(out, envRows)
+}
+
+func PrintTrustReview(out io.Writer, p plugin.Plugin, report runtime.DiagnosticReport) {
+	printHeading(out, "plugin trust")
+	printSection(out, "plugin")
+	printRows(out, [][2]string{
+		{"name", p.Manifest.Plugin.Name},
+		{"workspace", p.Path},
+		{"entrypoint", p.Manifest.Plugin.Entrypoint},
+	})
+	printSection(out, "runtime")
+	printRows(out, [][2]string{
+		{"mode", string(report.RuntimeMode)},
+		{"declared tools", toolsValue(report.RuntimeConfig.Tools)},
+		{"alter.mise.toml", configValue(report.MiseConfigExists, report.RuntimeConfig.Path)},
+		{"alter.tool-versions", configValue(report.ToolVersionsExists, report.RuntimeConfig.ToolVersionsPath)},
+	})
+	printSection(out, "review")
+	fmt.Fprintln(out, "Trust allows this plugin to run mise-managed runtime setup and adapter code until one fingerprint changes.")
+	fmt.Fprintln(out, "Review files below before confirming.")
+	printSection(out, "fingerprints")
+	PrintTrustRows(out, report.Trust)
+	printSection(out, "meaning")
+	fmt.Fprintln(out, "alter.mise.toml is plugin-owned runtime policy. It declares tools mise may install or reuse.")
+	fmt.Fprintln(out, "Trusting means accepting this local plugin directory, runtime config, and adapter entrypoint as code you are willing to run.")
+	fmt.Fprintln(out, "Running code means mise may download tool archives and the adapter may execute local commands with your user permissions.")
+}
+
+func PrintTrustRows(out io.Writer, eval trust.Evaluation) {
+	status := string(eval.Status)
+	switch eval.Status {
+	case trust.StatusTrusted, trust.StatusNotRequired:
+		status = okStyle.Render(status)
+	case trust.StatusInvalidated:
+		status = warnStyle.Render(status)
+	default:
+		status = errStyle.Render(status)
+	}
+	printRows(out, [][2]string{
+		{"status", status},
+		{"reason", emptyValue(eval.Reason)},
+		{"store", emptyValue(eval.StorePath)},
+	})
+	if eval.Stored != nil {
+		printRows(out, [][2]string{
+			{"trusted at", emptyValue(eval.Stored.TrustedAt)},
+		})
+	}
+	printRows(out, [][2]string{
+		{"workspace", eval.Current.WorkspacePath},
+		{"manifest", hashValue(eval.Current.ManifestPath, eval.Current.ManifestHash)},
+		{"alter.mise.toml", hashValue(eval.Current.MisePath, eval.Current.MiseHash)},
+		{"alter.tool-versions", hashValue(eval.Current.ToolVersionsPath, eval.Current.ToolVersionsHash)},
+		{"entrypoint", hashValue(eval.Current.EntrypointPath, eval.Current.EntrypointHash)},
+	})
+	if len(eval.Mismatches) > 0 {
+		printSection(out, "invalidated")
+		for _, mismatch := range eval.Mismatches {
+			fmt.Fprintf(out, "%s %s\n", warnStyle.Render("changed"), mismatch)
+		}
+	}
+}
+
+func PrintTrustSaved(out io.Writer, record trust.Record, storePath string) {
+	printHeading(out, "plugin trust")
+	printRows(out, [][2]string{
+		{"status", okStyle.Render("trusted")},
+		{"plugin", record.Name},
+		{"store", storePath},
+		{"trusted at", record.TrustedAt},
+	})
+}
+
+func PrintTrustRemoved(out io.Writer, name, storePath string, removed bool) {
+	printHeading(out, "plugin trust")
+	status := warnStyle.Render("not found")
+	if removed {
+		status = okStyle.Render("removed")
+	}
+	printRows(out, [][2]string{
+		{"status", status},
+		{"plugin", name},
+		{"store", storePath},
+	})
+}
+
+func PrintTrustNotRequired(out io.Writer, p plugin.Plugin) {
+	printHeading(out, "plugin trust")
+	printRows(out, [][2]string{
+		{"status", okStyle.Render("not required")},
+		{"plugin", p.Manifest.Plugin.Name},
+		{"reason", "direct runtime has no declared tools"},
+	})
 }
 
 func Warning(s string) string {
@@ -308,6 +418,23 @@ func configValue(exists bool, path string) string {
 		return okStyle.Render("present")
 	}
 	return okStyle.Render("present") + " " + path
+}
+
+func hashValue(path, hash string) string {
+	if path == "" {
+		return mutedStyle.Render("not available")
+	}
+	if hash == "" {
+		return mutedStyle.Render("absent") + " " + path
+	}
+	return shortHash(hash) + " " + path
+}
+
+func shortHash(hash string) string {
+	if len(hash) <= 12 {
+		return hash
+	}
+	return hash[:12]
 }
 
 func sortedKeys(values map[string]string) []string {

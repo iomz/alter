@@ -132,8 +132,11 @@ go run ./cmd/alter plugin inspect hello
 go run ./cmd/alter plugin inspect hello --json
 go run ./cmd/alter plugin doctor hello
 go run ./cmd/alter plugin doctor test-runtime
+go run ./cmd/alter plugin trust-status test-runtime
+go run ./cmd/alter plugin trust test-runtime
 go run ./cmd/alter hello greet --name iomz
 ALTER_LOG=debug go run ./cmd/alter test-runtime node-version
+go run ./cmd/alter plugin untrust test-runtime
 go run ./cmd/alter mcp
 ```
 
@@ -212,8 +215,32 @@ runtime mode is `mise`. Running `alter test-runtime node-version` should install
 reuse only that declared Node.js runtime, then execute the adapter through `mise exec`
 inside `plugins/test-runtime`.
 
-When a plugin has `alter.mise.toml`, alter prints a runtime-config trust notice before
-`mise install`. The notice means:
+Mise-managed plugins require explicit trust before execution. Trust is recorded in:
+
+```text
+~/.local/state/alter/trust/plugins.json
+```
+
+The trust store fingerprints:
+
+- `alter.plugin.toml`
+- `alter.mise.toml`, when present
+- `alter.tool-versions`, when present
+- adapter entrypoint file, when it exists inside the plugin workspace
+
+Trust is invalidated when any trusted fingerprint changes, or when the plugin workspace
+path changes. The next run refuses to execute and tells you to review and trust again.
+
+Use:
+
+```sh
+alter plugin trust-status test-runtime
+alter plugin trust test-runtime
+alter plugin untrust test-runtime
+```
+
+`alter plugin trust <name>` shows a review summary and asks for confirmation with `huh`.
+Trust is never written silently. The review means:
 
 - `alter.mise.toml` is plugin-owned runtime policy. It declares tools mise may install
   or reuse for this plugin.
@@ -225,8 +252,8 @@ When a plugin has `alter.mise.toml`, alter prints a runtime-config trust notice 
   confirm declared tools and adapter code match your expectation; then run the command
   again. If it does not match, do not run that plugin.
 
-Current prototype has no persistent trust store or approval database. Trust is local and
-manual: review files, then decide whether to run the command.
+Direct runtime plugins with no declared tools do not require trust. MCP mode cannot prompt
+for trust, so it fails with a concise actionable error when a tool needs trust.
 
 Set `ALTER_LOG=debug` to print runtime decision details to stderr. Debug output includes
 plugin name, workspace, adapter entrypoint, runtime mode, runtime config presence,
@@ -292,6 +319,7 @@ Manual isolation check:
 ```sh
 ./bin/alter plugin doctor hello
 ./bin/alter plugin doctor test-runtime
+./bin/alter plugin trust test-runtime
 ALTER_LOG=debug ./bin/alter test-runtime node-version
 npx -y @modelcontextprotocol/inspector ./bin/alter mcp
 ```

@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -203,23 +202,37 @@ func TestPrepareSkipsMiseInstallWhenNoToolsDeclared(t *testing.T) {
 	}
 }
 
-func TestPrepareExplainsRuntimeConfigTrust(t *testing.T) {
+func TestPrepareRequiresTrustForMiseMode(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	pluginDir := filepath.Join(home, "plugin")
 	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, plugin.ManifestFileName), []byte(`[plugin]
+name = "test-runtime"
+description = "test"
+entrypoint = "alter-test-runtime"
+
+[runtime]
+manager = "mise"
+`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(pluginDir, "alter.mise.toml"), []byte("[tools]\nnode = \"24\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "alter-test-runtime"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(home, "mise-called")
 	fakeMise := filepath.Join(home, "mise")
-	if err := os.WriteFile(fakeMise, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeMise, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	var stderr bytes.Buffer
 	resolver := testResolver(home, fakeMise, "")
-	runner := NewMiseRunnerWithResolver(io.Discard, &stderr, resolver)
+	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, resolver)
 	err := runner.Prepare(plugin.Plugin{
 		Path: pluginDir,
 		Manifest: plugin.Manifest{
@@ -230,22 +243,14 @@ func TestPrepareExplainsRuntimeConfigTrust(t *testing.T) {
 			Runtime: plugin.RuntimeSection{Manager: "mise"},
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("Prepare() error = nil, want trust required")
 	}
-	got := stderr.String()
-	for _, want := range []string{
-		"declares mise-managed runtime config",
-		"declared tools: node@24",
-		"what it means",
-		"what you are trusting",
-		"running code",
-		"how to trust",
-		"no persistent trust store",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("runtime trust notice missing %q:\n%s", want, got)
-		}
+	if !strings.Contains(err.Error(), "alter plugin trust test-runtime") {
+		t.Fatalf("Prepare() error = %q, want trust command", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("mise install ran; marker stat error = %v", err)
 	}
 }
 
