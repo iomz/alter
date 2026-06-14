@@ -207,6 +207,22 @@ runtime mode is `mise`. Running `alter test-runtime node-version` should install
 reuse only that declared Node.js runtime, then execute the adapter through `mise exec`
 inside `plugins/test-runtime`.
 
+When a plugin has `alter.mise.toml`, alter prints a runtime-config trust notice before
+`mise install`. The notice means:
+
+- `alter.mise.toml` is plugin-owned runtime policy. It declares tools mise may install
+  or reuse for this plugin.
+- Trusting it means accepting this local plugin directory, its runtime config, and its
+  adapter entrypoint as code you are willing to run.
+- Running untrusted code means mise may download tool archives and the adapter process
+  may execute local commands with your user permissions.
+- To trust it, inspect `alter.plugin.toml`, `alter.mise.toml`, and the adapter entrypoint;
+  confirm declared tools and adapter code match your expectation; then run the command
+  again. If it does not match, do not run that plugin.
+
+Current prototype has no persistent trust store or approval database. Trust is local and
+manual: review files, then decide whether to run the command.
+
 Set `ALTER_LOG=debug` to print runtime decision details to stderr. Debug output includes
 plugin name, workspace, adapter entrypoint, runtime mode, runtime config presence,
 declared tools, install skip status, mise path when used, mise cwd, sanitized mise

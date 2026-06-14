@@ -234,7 +234,7 @@ func (r *MiseRunner) Prepare(p plugin.Plugin) error {
 		return nil
 	}
 	if decision.MiseConfigExists {
-		fmt.Fprintf(r.stderr, "warning: plugin %q has %s; review and trust it before running untrusted code\n", p.Manifest.Plugin.Name, miseConfigFileName)
+		r.printRuntimeConfigNotice(p, decision)
 	}
 	if len(decision.DeclaredTools) == 0 {
 		return nil
@@ -252,6 +252,21 @@ func (r *MiseRunner) Prepare(p plugin.Plugin) error {
 		return fmt.Errorf("mise install failed: %w\n%s", err, strings.TrimSpace(output.String()))
 	}
 	return nil
+}
+
+func (r *MiseRunner) printRuntimeConfigNotice(p plugin.Plugin, decision RuntimeDecision) {
+	fmt.Fprintf(r.stderr, "warning: plugin %q declares mise-managed runtime config\n", p.Manifest.Plugin.Name)
+	fmt.Fprintf(r.stderr, "  config: %s\n", decision.MiseConfigPath)
+	fmt.Fprintf(r.stderr, "  declared tools: %s\n", formatTools(decision.DeclaredTools))
+	fmt.Fprintf(r.stderr, "  what it means: alter will let mise install or reuse these tool versions, then run the plugin adapter from this workspace.\n")
+	fmt.Fprintf(r.stderr, "  what you are trusting: this local plugin directory, its %s, and its adapter entrypoint %q.\n", miseConfigFileName, p.Manifest.Plugin.Entrypoint)
+	fmt.Fprintf(r.stderr, "  running code: mise may download tool archives; the adapter process may execute local commands with your user permissions.\n")
+	fmt.Fprintf(r.stderr, "  how to trust: inspect %s, %s, and %s; confirm declared tools and adapter code match your expectation; then run the command again. If not trusted, do not run this plugin.\n",
+		filepath.Join(p.Path, plugin.ManifestFileName),
+		decision.MiseConfigPath,
+		filepath.Join(p.Path, p.Manifest.Plugin.Entrypoint),
+	)
+	fmt.Fprintf(r.stderr, "  note: current prototype has no persistent trust store; this notice is informational.\n")
 }
 
 func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
