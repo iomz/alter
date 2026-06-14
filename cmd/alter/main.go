@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
-	"strings"
 
 	"github.com/iomz/alter/internal/adapter"
 	"github.com/iomz/alter/internal/mcp"
@@ -20,7 +18,7 @@ import (
 
 func main() {
 	if err := newCommand().Run(context.Background(), os.Args); err != nil {
-		fmt.Fprintln(os.Stderr, "alter:", err)
+		fmt.Fprintln(os.Stderr, ui.Error("error"), err)
 		os.Exit(1)
 	}
 }
@@ -56,9 +54,7 @@ func newPluginCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					for _, p := range plugins {
-						fmt.Printf("%s\t%s\n", p.Manifest.Plugin.Name, p.Manifest.Plugin.Description)
-					}
+					ui.PrintPluginList(os.Stdout, plugins)
 					return nil
 				},
 			},
@@ -66,6 +62,9 @@ func newPluginCommand() *cli.Command {
 				Name:      "inspect",
 				Usage:     "print plugin manifest",
 				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "print raw manifest JSON"},
+				},
 				Action: func(_ context.Context, cmd *cli.Command) error {
 					if cmd.NArg() != 1 {
 						return errors.New("usage: alter plugin inspect <name>")
@@ -78,7 +77,11 @@ func newPluginCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					return printJSON(p.Manifest)
+					if cmd.Bool("json") {
+						return printJSON(p.Manifest)
+					}
+					ui.PrintPluginManifest(os.Stdout, p)
+					return nil
 				},
 			},
 			{
@@ -99,7 +102,8 @@ func newPluginCommand() *cli.Command {
 						return err
 					}
 					if len(report.Warnings) > 0 {
-						return printJSON(report)
+						ui.PrintPluginDoctorReport(os.Stdout, report)
+						return nil
 					}
 					p, err := store.Load(name)
 					if err != nil {
@@ -110,7 +114,7 @@ func newPluginCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					printRuntimeDiagnostics(os.Stdout, diagnostics)
+					ui.PrintRuntimeDiagnostics(os.Stdout, diagnostics)
 					return nil
 				},
 			},
@@ -273,53 +277,4 @@ func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
-}
-
-func printRuntimeDiagnostics(out io.Writer, report runtime.DiagnosticReport) {
-	fmt.Fprintf(out, "plugin: %s\n", report.PluginName)
-	fmt.Fprintf(out, "workspace: %s\n", report.PluginWorkspace)
-	fmt.Fprintf(out, "entrypoint: %s\n", report.AdapterEntrypoint)
-	fmt.Fprintf(out, "runtime mode: %s\n", report.RuntimeMode)
-	if report.InstallSkipped {
-		fmt.Fprintln(out, "mise install: skipped")
-	} else {
-		fmt.Fprintln(out, "mise install: required")
-	}
-	if len(report.RuntimeConfig.Tools) == 0 {
-		fmt.Fprintln(out, "declared tools: none")
-	} else {
-		fmt.Fprintf(out, "declared tools: %s\n", strings.Join(report.RuntimeConfig.Tools, ", "))
-	}
-	fmt.Fprintf(out, "%s: %t", "alter.mise.toml", report.MiseConfigExists)
-	if report.RuntimeConfig.Path != "" {
-		fmt.Fprintf(out, " (%s)", report.RuntimeConfig.Path)
-	}
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "%s: %t", "alter.tool-versions", report.ToolVersionsExists)
-	if report.RuntimeConfig.ToolVersionsPath != "" {
-		fmt.Fprintf(out, " (%s)", report.RuntimeConfig.ToolVersionsPath)
-	}
-	fmt.Fprintln(out)
-	if report.MiseBinary == "" {
-		fmt.Fprintln(out, "mise binary: not used")
-	} else {
-		fmt.Fprintf(out, "mise binary: %s\n", report.MiseBinary)
-		fmt.Fprintf(out, "mise cwd: %s\n", report.MiseCWD)
-		fmt.Fprintln(out, "user/global mise/asdf config: ignored")
-		fmt.Fprintln(out, "mise env:")
-		for _, key := range sortedKeys(report.Environment) {
-			if strings.HasPrefix(key, "MISE_") || strings.HasPrefix(key, "ASDF_") {
-				fmt.Fprintf(out, "  %s=%s\n", key, report.Environment[key])
-			}
-		}
-	}
-}
-
-func sortedKeys(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }

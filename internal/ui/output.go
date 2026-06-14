@@ -3,8 +3,10 @@ package ui
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
+	"github.com/iomz/alter/internal/plugin"
 	"github.com/iomz/alter/internal/runtime"
 
 	"github.com/charmbracelet/glamour"
@@ -13,22 +15,33 @@ import (
 )
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("36"))
-	okStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
-	warnStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-	errStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("36"))
+	sectionStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81"))
+	labelStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	valueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	mutedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	okStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	infoStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	warnStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
+	errStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 
 	promptTheme = huh.ThemeBase()
 )
 
 func PrintRuntimeFound(out io.Writer, path string) {
-	fmt.Fprintln(out, titleStyle.Render("mise runtime"))
-	fmt.Fprintf(out, "%s %s\n", okStyle.Render("found"), path)
+	printHeading(out, "mise runtime")
+	printRows(out, [][2]string{
+		{"status", okStyle.Render("found")},
+		{"path", path},
+	})
 }
 
 func PrintRuntimeMissing(out io.Writer, err error) {
-	fmt.Fprintln(out, titleStyle.Render("mise runtime"))
-	fmt.Fprintf(out, "%s %s\n", errStyle.Render("missing"), err)
+	printHeading(out, "mise runtime")
+	printRows(out, [][2]string{
+		{"status", errStyle.Render("missing")},
+		{"detail", err.Error()},
+	})
 }
 
 func PrintMiseBootstrapExplanation(out io.Writer, installPath string) error {
@@ -87,12 +100,15 @@ func PrintPromptDeferred(out io.Writer) {
 }
 
 func PrintRuntimeInstalled(out io.Writer, path string) {
-	fmt.Fprintln(out, titleStyle.Render("mise runtime"))
-	fmt.Fprintf(out, "%s %s\n", okStyle.Render("installed"), path)
+	printHeading(out, "mise runtime")
+	printRows(out, [][2]string{
+		{"status", okStyle.Render("installed")},
+		{"path", path},
+	})
 }
 
 func PrintCleanupReport(out io.Writer, items []runtime.CleanupItem) {
-	fmt.Fprintln(out, titleStyle.Render("setup cleanup"))
+	printHeading(out, "setup cleanup")
 	for _, item := range items {
 		status := "kept"
 		style := warnStyle
@@ -100,13 +116,207 @@ func PrintCleanupReport(out io.Writer, items []runtime.CleanupItem) {
 			status = "removed"
 			style = okStyle
 		}
-		fmt.Fprintf(out, "%s %s %s\n", style.Render(status), item.Label, item.Path)
+		fmt.Fprintf(out, "%s %s\n", style.Width(9).Render(status), item.Label)
+		fmt.Fprintf(out, "          %s\n", mutedStyle.Render(item.Path))
 	}
-	fmt.Fprintln(out, "user shell configs and global mise/asdf files were not touched")
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "%s %s\n", infoStyle.Render("safety"), "user shell configs and global mise/asdf files were not touched")
+}
+
+func PrintPluginList(out io.Writer, plugins []plugin.Plugin) {
+	printHeading(out, "plugins")
+	if len(plugins) == 0 {
+		fmt.Fprintln(out, mutedStyle.Render("none found"))
+		return
+	}
+	fmt.Fprintf(out, "%s  %s  %s\n",
+		labelStyle.Width(16).Render("name"),
+		labelStyle.Width(8).Render("mcp"),
+		labelStyle.Render("description"),
+	)
+	fmt.Fprintf(out, "%s  %s  %s\n",
+		mutedStyle.Width(16).Render(strings.Repeat("-", 16)),
+		mutedStyle.Width(8).Render(strings.Repeat("-", 8)),
+		mutedStyle.Render(strings.Repeat("-", 32)),
+	)
+	for _, p := range plugins {
+		mcpState := "off"
+		if p.Manifest.MCP.Enabled {
+			mcpState = "on"
+		}
+		fmt.Fprintf(out, "%s  %s  %s\n",
+			valueStyle.Width(16).Render(p.Manifest.Plugin.Name),
+			valueStyle.Width(8).Render(mcpState),
+			p.Manifest.Plugin.Description,
+		)
+	}
+}
+
+func PrintPluginManifest(out io.Writer, p plugin.Plugin) {
+	printHeading(out, "plugin inspect")
+	printSection(out, "plugin")
+	printRows(out, [][2]string{
+		{"name", p.Manifest.Plugin.Name},
+		{"description", p.Manifest.Plugin.Description},
+		{"maintainer", emptyValue(p.Manifest.Plugin.Maintainer)},
+		{"entrypoint", p.Manifest.Plugin.Entrypoint},
+		{"path", p.Path},
+	})
+	printSection(out, "upstream")
+	printRows(out, [][2]string{
+		{"name", emptyValue(p.Manifest.Upstream.Name)},
+		{"repository", emptyValue(p.Manifest.Upstream.Repository)},
+	})
+	printSection(out, "runtime")
+	printRows(out, [][2]string{
+		{"manager", p.Manifest.Runtime.Manager},
+	})
+	printSection(out, "mcp")
+	enabled := "disabled"
+	if p.Manifest.MCP.Enabled {
+		enabled = okStyle.Render("enabled")
+	}
+	printRows(out, [][2]string{
+		{"status", enabled},
+		{"namespace", emptyValue(p.Manifest.MCP.Namespace)},
+	})
+}
+
+func PrintPluginDoctorReport(out io.Writer, report plugin.DoctorReport) {
+	printHeading(out, "plugin doctor")
+	status := okStyle.Render(report.Status)
+	if len(report.Warnings) > 0 {
+		status = warnStyle.Render("warning")
+	}
+	printRows(out, [][2]string{
+		{"name", report.Name},
+		{"status", status},
+		{"path", report.Path},
+		{"manifest", report.Manifest},
+		{"entrypoint", emptyValue(report.Entrypoint)},
+	})
+	if len(report.Warnings) > 0 {
+		printSection(out, "warnings")
+		for _, warning := range report.Warnings {
+			fmt.Fprintf(out, "%s %s\n", warnStyle.Render("warning"), warning)
+		}
+	}
+}
+
+func PrintRuntimeDiagnostics(out io.Writer, report runtime.DiagnosticReport) {
+	printHeading(out, "runtime diagnostics")
+	printSection(out, "plugin")
+	printRows(out, [][2]string{
+		{"name", report.PluginName},
+		{"workspace", report.PluginWorkspace},
+		{"entrypoint", report.AdapterEntrypoint},
+	})
+
+	printSection(out, "runtime")
+	mode := string(report.RuntimeMode)
+	if report.RuntimeMode == runtime.RuntimeModeDirect {
+		mode = okStyle.Render(mode)
+	} else {
+		mode = infoStyle.Render(mode)
+	}
+	install := warnStyle.Render("required")
+	if report.InstallSkipped {
+		install = okStyle.Render("skipped")
+	}
+	printRows(out, [][2]string{
+		{"mode", mode},
+		{"mise install", install},
+		{"declared tools", toolsValue(report.RuntimeConfig.Tools)},
+	})
+
+	printSection(out, "config")
+	printRows(out, [][2]string{
+		{"alter.mise.toml", configValue(report.MiseConfigExists, report.RuntimeConfig.Path)},
+		{"alter.tool-versions", configValue(report.ToolVersionsExists, report.RuntimeConfig.ToolVersionsPath)},
+	})
+
+	printSection(out, "mise isolation")
+	if report.MiseBinary == "" {
+		printRows(out, [][2]string{
+			{"mise binary", mutedStyle.Render("not used")},
+		})
+		return
+	}
+	printRows(out, [][2]string{
+		{"mise binary", report.MiseBinary},
+		{"mise cwd", report.MiseCWD},
+		{"user/global config", okStyle.Render("ignored")},
+	})
+	printSection(out, "mise env")
+	var envRows [][2]string
+	for _, key := range sortedKeys(report.Environment) {
+		if strings.HasPrefix(key, "MISE_") || strings.HasPrefix(key, "ASDF_") {
+			envRows = append(envRows, [2]string{key, report.Environment[key]})
+		}
+	}
+	printRows(out, envRows)
 }
 
 func Warning(s string) string {
 	return warnStyle.Render(s)
+}
+
+func Error(s string) string {
+	return errStyle.Render(s)
+}
+
+func printHeading(out io.Writer, title string) {
+	fmt.Fprintln(out, titleStyle.Render(title))
+}
+
+func printSection(out io.Writer, title string) {
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, sectionStyle.Render(title))
+}
+
+func printRows(out io.Writer, rows [][2]string) {
+	width := 0
+	for _, row := range rows {
+		if len(row[0]) > width {
+			width = len(row[0])
+		}
+	}
+	for _, row := range rows {
+		fmt.Fprintf(out, "%s  %s\n", labelStyle.Width(width).Render(row[0]), valueStyle.Render(row[1]))
+	}
+}
+
+func emptyValue(value string) string {
+	if value == "" {
+		return mutedStyle.Render("none")
+	}
+	return value
+}
+
+func toolsValue(tools []string) string {
+	if len(tools) == 0 {
+		return mutedStyle.Render("none")
+	}
+	return strings.Join(tools, ", ")
+}
+
+func configValue(exists bool, path string) string {
+	if !exists {
+		return mutedStyle.Render("absent")
+	}
+	if path == "" {
+		return okStyle.Render("present")
+	}
+	return okStyle.Render("present") + " " + path
+}
+
+func sortedKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func renderMarkdown(source string) (string, error) {

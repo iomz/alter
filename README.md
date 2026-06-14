@@ -129,12 +129,17 @@ go run ./cmd/alter setup shell
 go run ./cmd/alter setup cleanup
 go run ./cmd/alter plugin list
 go run ./cmd/alter plugin inspect hello
+go run ./cmd/alter plugin inspect hello --json
 go run ./cmd/alter plugin doctor hello
 go run ./cmd/alter plugin doctor test-runtime
 go run ./cmd/alter hello greet --name iomz
 ALTER_LOG=debug go run ./cmd/alter test-runtime node-version
 go run ./cmd/alter mcp
 ```
+
+Human-facing commands use structured sections, compact tables, and semantic status
+styles. `alter plugin inspect <name>` defaults to a readable manifest summary; use
+`--json` for raw parseable manifest output.
 
 `alter plugin doctor <name>` performs static layout checks first. If an adapter entrypoint
 exists, it prints runtime isolation diagnostics. Manifest-only plugin directories report
