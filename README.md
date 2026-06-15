@@ -2,7 +2,7 @@
 
 A local/private tool control plane for managed CLI plugins and MCP exposure.
 
-`alter` is not a business-logic tool. It discovers and inspects plugin adapters. Actual tools such as `ingest` or `suuntool` do not need to know anything about `alter`, MCP, manifests, or schemas. Adapter plugins translate those tools into the alter contract.
+`alter` is not a business-logic tool. It discovers and inspects plugin adapters. Actual upstream tools do not need to know anything about `alter`, MCP, manifests, or schemas. Adapter plugins translate those tools into the alter contract.
 
 No daemon runs. MCP mode is `alter mcp` over stdio.
 
@@ -21,8 +21,9 @@ Plugin path is the local command name:
 
 ```text
 plugins/hello
-plugins/ingest
-plugins/suuntool
+plugins/test-runtime
+plugins/foo
+plugins/bar
 ```
 
 Ownership and upstream information belong in `alter.plugin.toml`, not in filesystem path.
@@ -114,10 +115,10 @@ stdout.
 Foundation-only plugin directories may contain only a manifest:
 
 ```text
-plugins/ingest/
+plugins/foo/
   alter.plugin.toml
 
-plugins/suuntool/
+plugins/bar/
   alter.plugin.toml
 ```
 

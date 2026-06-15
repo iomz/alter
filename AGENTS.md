@@ -20,6 +20,8 @@ Business logic belongs in plugins or upstream tools.
 
 alter is a control plane.
 
+Alter should be humble: it wraps tools without demanding that tools know about Alter.
+
 It is not:
 
 - an agent framework
