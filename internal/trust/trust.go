@@ -237,7 +237,7 @@ func fingerprintPlugin(p plugin.Plugin) (Fingerprints, []string, error) {
 	}
 
 	entrypointPath := filepath.Clean(filepath.Join(workspacePath, p.Manifest.Plugin.Entrypoint))
-	if isInsideWorkspace(workspacePath, entrypointPath) {
+	if plugin.IsInsideWorkspace(workspacePath, entrypointPath) {
 		current.EntrypointPath = entrypointPath
 		current.EntrypointHash, current.HasEntrypoint, err = hashIfExists(entrypointPath)
 		if err != nil {
@@ -260,14 +260,6 @@ func hashIfExists(path string) (string, bool, error) {
 	}
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:]), true, nil
-}
-
-func isInsideWorkspace(workspace, path string) bool {
-	rel, err := filepath.Rel(workspace, path)
-	if err != nil {
-		return false
-	}
-	return rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
 }
 
 func defaultStorePath() (string, error) {

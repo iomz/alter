@@ -176,6 +176,10 @@ func (m Manifest) Validate(expectedName string) error {
 	if m.Plugin.Name != expectedName {
 		return fmt.Errorf("plugin path %q must match manifest plugin.name %q", expectedName, m.Plugin.Name)
 	}
+	if filepath.IsAbs(m.Plugin.Entrypoint) ||
+		!IsInsideWorkspace(".", filepath.Join(".", m.Plugin.Entrypoint)) {
+		return fmt.Errorf("plugin entrypoint %q must stay within the plugin workspace", m.Plugin.Entrypoint)
+	}
 	if m.Runtime.Manager != "mise" {
 		return fmt.Errorf("unsupported runtime manager %q", m.Runtime.Manager)
 	}
@@ -183,6 +187,14 @@ func (m Manifest) Validate(expectedName string) error {
 		return errors.New("manifest requires mcp.namespace when mcp.enabled is true")
 	}
 	return nil
+}
+
+func IsInsideWorkspace(workspace, path string) bool {
+	rel, err := filepath.Rel(workspace, path)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func validatePluginName(name string) error {

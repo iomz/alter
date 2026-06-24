@@ -2,6 +2,9 @@ package runtime
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -226,7 +229,38 @@ func NewMiseRunnerWithResolver(stdout, stderr io.Writer, resolver MiseResolver) 
 	return &MiseRunner{stdout: stdout, stderr: stderr, resolver: resolver}
 }
 
-func (r *MiseRunner) Prepare(p plugin.Plugin) error {
+func (r *MiseRunner) PrepareFingerprint(p plugin.Plugin) (string, error) {
+	decision, err := r.Decide(p)
+	if err != nil {
+		return "", err
+	}
+	eval, err := trust.Evaluate(p)
+	if err != nil {
+		return "", err
+	}
+	values := []string{
+		p.Manifest.Plugin.Name,
+		p.Path,
+		string(decision.Mode),
+		decision.MiseBinary,
+		strings.Join(decision.DeclaredTools, ","),
+		eval.Current.WorkspacePath,
+		eval.Current.ManifestHash,
+		eval.Current.MiseHash,
+		eval.Current.ToolVersionsHash,
+		eval.Current.EntrypointHash,
+		string(eval.Status),
+		eval.Reason,
+	}
+	values = append(values, flattenEnv(safeBaseEnv())...)
+	sum := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (r *MiseRunner) Prepare(ctx context.Context, p plugin.Plugin) error {
+	if p.Manifest.Runtime.Manager != "mise" {
+		return fmt.Errorf("unsupported runtime manager %q", p.Manifest.Runtime.Manager)
+	}
 	decision, err := r.Decide(p)
 	if err != nil {
 		return err
@@ -241,7 +275,7 @@ func (r *MiseRunner) Prepare(p plugin.Plugin) error {
 	if len(decision.DeclaredTools) == 0 {
 		return nil
 	}
-	cmd := exec.Command(decision.MiseBinary, "install")
+	cmd := exec.CommandContext(ctx, decision.MiseBinary, "install")
 	cmd.Dir = p.Path
 	if err := r.configureMiseCommand(cmd); err != nil {
 		return err
@@ -270,7 +304,7 @@ func (e TrustRequiredError) Error() string {
 	return message
 }
 
-func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
+func (r *MiseRunner) Run(ctx context.Context, p plugin.Plugin, args ...string) ([]byte, error) {
 	if p.Manifest.Runtime.Manager != "mise" {
 		return nil, fmt.Errorf("unsupported runtime manager %q", p.Manifest.Runtime.Manager)
 	}
@@ -286,7 +320,7 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 	}
 
 	if decision.Mode == RuntimeModeDirect {
-		cmd := exec.Command(entrypoint, args...)
+		cmd := exec.CommandContext(ctx, entrypoint, args...)
 		cmd.Dir = p.Path
 		cmd.Env = flattenEnv(safeBaseEnv())
 		r.debugCommand("direct adapter", cmd)
@@ -303,7 +337,7 @@ func (r *MiseRunner) Run(p plugin.Plugin, args ...string) ([]byte, error) {
 	}
 
 	cmdArgs := append([]string{"exec", "--", entrypoint}, args...)
-	cmd := exec.Command(decision.MiseBinary, cmdArgs...)
+	cmd := exec.CommandContext(ctx, decision.MiseBinary, cmdArgs...)
 	cmd.Dir = p.Path
 	if err := r.configureMiseCommand(cmd); err != nil {
 		return nil, err
@@ -345,6 +379,19 @@ func (r *MiseRunner) configureMiseCommand(cmd *exec.Cmd) error {
 	if err != nil {
 		return err
 	}
+	for _, dir := range []string{
+		filepath.Dir(env.GlobalConfigFile),
+		env.DataDir,
+		env.CacheDir,
+		env.StateDir,
+	} {
+		if dir == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create isolated mise directory %q: %w", dir, err)
+		}
+	}
 	cmd.Env = env.Vars
 	return nil
 }
@@ -359,10 +406,6 @@ func (r *MiseRunner) BuildMiseEnvironment() (MiseEnvironment, error) {
 		values["MISE_LEGACY_VERSION_FILE"] = "false"
 		values["MISE_ASDF_COMPAT"] = "false"
 		return MiseEnvironment{Vars: flattenEnv(values), Values: values}, nil
-	}
-	stateDir, err := resolver.ManagedStateDir()
-	if err != nil {
-		return MiseEnvironment{}, err
 	}
 	dataDir, err := resolver.ManagedDataDir()
 	if err != nil {
@@ -379,11 +422,6 @@ func (r *MiseRunner) BuildMiseEnvironment() (MiseEnvironment, error) {
 	miseStateDir, err := resolver.ManagedMiseStateDir()
 	if err != nil {
 		return MiseEnvironment{}, err
-	}
-	for _, dir := range []string{stateDir, dataDir, cacheDir, miseStateDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return MiseEnvironment{}, fmt.Errorf("create isolated mise directory %q: %w", dir, err)
-		}
 	}
 	values := safeBaseEnv()
 	values["MISE_OVERRIDE_CONFIG_FILENAMES"] = miseConfigFileName

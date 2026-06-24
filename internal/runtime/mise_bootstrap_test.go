@@ -30,17 +30,24 @@ func TestMiseBootstrapperInstallsToManagedPath(t *testing.T) {
 		runScript: func(_ context.Context, scriptPath, targetPath string) ([]byte, error) {
 			gotScriptPath = scriptPath
 			gotTarget = targetPath
+			info, err := os.Stat(scriptPath)
+			if err != nil {
+				return nil, err
+			}
+			if info.Mode().Perm() != 0o600 {
+				return nil, errors.New("installer script permissions are not 0600")
+			}
 			if err := os.WriteFile(targetPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 				return nil, err
 			}
 			return []byte("installer success output\n"), nil
 		},
-		mkdirAll:  os.MkdirAll,
-		writeFile: os.WriteFile,
-		remove:    os.Remove,
-		tempDir:   tempDir,
-		stdout:    &stdout,
-		stderr:    &stderr,
+		mkdirAll:   os.MkdirAll,
+		createTemp: os.CreateTemp,
+		remove:     os.Remove,
+		tempDir:    tempDir,
+		stdout:     &stdout,
+		stderr:     &stderr,
 	}
 
 	got, err := bootstrapper.Install(context.Background())
@@ -85,12 +92,12 @@ func TestMiseBootstrapperShowsInstallerOutputOnlyOnFailure(t *testing.T) {
 		runScript: func(context.Context, string, string) ([]byte, error) {
 			return []byte("raw installer failure\n"), errors.New("installer failed")
 		},
-		mkdirAll:  os.MkdirAll,
-		writeFile: os.WriteFile,
-		remove:    os.Remove,
-		tempDir:   tempDir,
-		stdout:    io.Discard,
-		stderr:    &stderr,
+		mkdirAll:   os.MkdirAll,
+		createTemp: os.CreateTemp,
+		remove:     os.Remove,
+		tempDir:    tempDir,
+		stdout:     io.Discard,
+		stderr:     &stderr,
 	}
 
 	_, err := bootstrapper.Install(context.Background())

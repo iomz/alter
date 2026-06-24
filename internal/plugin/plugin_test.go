@@ -59,6 +59,32 @@ namespace = ""
 	}
 }
 
+func TestStoreLoadRejectsEntrypointOutsideWorkspace(t *testing.T) {
+	for _, entrypoint := range []string{
+		"../outside",
+		filepath.Join(string(filepath.Separator), "tmp", "outside"),
+	} {
+		t.Run(entrypoint, func(t *testing.T) {
+			root := t.TempDir()
+			writeManifest(t, root, "hello", "Example alter plugin", entrypoint)
+
+			_, err := NewStore(root).Load("hello")
+			if err == nil {
+				t.Fatal("Load() error = nil, want entrypoint workspace error")
+			}
+		})
+	}
+}
+
+func TestStoreLoadAcceptsNestedEntrypointInsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "hello", "Example alter plugin", filepath.Join("bin", "alter-hello"))
+
+	if _, err := NewStore(root).Load("hello"); err != nil {
+		t.Fatalf("Load() error = %v, want nested entrypoint accepted", err)
+	}
+}
+
 func TestStoreDoctorDoesNotRequireEntrypointExecution(t *testing.T) {
 	root := t.TempDir()
 	writeManifest(t, root, "ingest", "Adapter boundary for ingest tooling", "alter-ingest")

@@ -66,7 +66,7 @@ func newPluginCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "json", Usage: "print raw manifest JSON"},
 				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
+				Action: func(ctx context.Context, cmd *cli.Command) error {
 					if cmd.NArg() != 1 {
 						return errors.New("usage: alter plugin inspect <name>")
 					}
@@ -89,7 +89,7 @@ func newPluginCommand() *cli.Command {
 				Name:      "doctor",
 				Usage:     "validate plugin manifest and layout",
 				ArgsUsage: "<name>",
-				Action: func(_ context.Context, cmd *cli.Command) error {
+				Action: func(ctx context.Context, cmd *cli.Command) error {
 					if cmd.NArg() != 1 {
 						return errors.New("usage: alter plugin doctor <name>")
 					}
@@ -280,12 +280,12 @@ func newHelloCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Value: "world", Usage: "name to greet"},
 				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
+				Action: func(ctx context.Context, cmd *cli.Command) error {
 					executor, err := executorContext()
 					if err != nil {
 						return err
 					}
-					out, err := executor.Invoke("hello", "greet", map[string]any{"name": cmd.String("name")})
+					out, err := executor.Invoke(ctx, "hello", "greet", map[string]any{"name": cmd.String("name")})
 					if err != nil {
 						return err
 					}
@@ -305,12 +305,12 @@ func newTestRuntimeCommand() *cli.Command {
 			{
 				Name:  "node-version",
 				Usage: "return Node.js version resolved through mise mode",
-				Action: func(context.Context, *cli.Command) error {
+				Action: func(ctx context.Context, _ *cli.Command) error {
 					executor, err := executorContext()
 					if err != nil {
 						return err
 					}
-					out, err := executor.Invoke("test-runtime", "node-version", map[string]any{})
+					out, err := executor.Invoke(ctx, "test-runtime", "node-version", map[string]any{})
 					if err != nil {
 						return err
 					}

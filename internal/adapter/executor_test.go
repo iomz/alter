@@ -1,7 +1,9 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +17,7 @@ func TestExecutorInvokePreparesRunsAndNormalizesOutput(t *testing.T) {
 	runtime := &fakeRuntime{out: []byte(`{"message":"hello, iomz","plugin":"hello"}`)}
 	executor := NewExecutor(plugin.NewStore(root), runtime)
 
-	got, err := executor.Invoke("hello", "greet", map[string]any{"name": "iomz"})
+	got, err := executor.Invoke(context.Background(), "hello", "greet", map[string]any{"name": "iomz"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +51,71 @@ func TestExecutorInvokePreparesRunsAndNormalizesOutput(t *testing.T) {
 	}
 }
 
+func TestExecutorCachesPrepareForSameFingerprint(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "hello")
+	runtime := &fakeRuntime{
+		fingerprint: "fingerprint-1",
+		out:         []byte(`{"ok":true}`),
+	}
+	executor := NewExecutor(plugin.NewStore(root), runtime)
+
+	for range 2 {
+		if _, err := executor.Invoke(context.Background(), "hello", "greet", map[string]any{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(runtime.prepared) != 1 {
+		t.Fatalf("prepared = %#v, want one prepare", runtime.prepared)
+	}
+	if len(runtime.runs) != 2 {
+		t.Fatalf("runs = %#v, want two runs", runtime.runs)
+	}
+}
+
+func TestExecutorRepreparesWhenFingerprintChanges(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "hello")
+	runtime := &fakeRuntime{
+		fingerprint: "fingerprint-1",
+		out:         []byte(`{"ok":true}`),
+	}
+	executor := NewExecutor(plugin.NewStore(root), runtime)
+
+	if _, err := executor.Invoke(context.Background(), "hello", "greet", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.fingerprint = "fingerprint-2"
+	if _, err := executor.Invoke(context.Background(), "hello", "greet", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.prepared) != 2 {
+		t.Fatalf("prepared = %#v, want prepare after fingerprint change", runtime.prepared)
+	}
+}
+
+func TestExecutorDoesNotCacheFailedPrepare(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "hello")
+	runtime := &fakeRuntime{
+		fingerprint: "fingerprint-1",
+		prepareErr:  errors.New("prepare failed"),
+		out:         []byte(`{"ok":true}`),
+	}
+	executor := NewExecutor(plugin.NewStore(root), runtime)
+
+	if _, err := executor.Invoke(context.Background(), "hello", "greet", map[string]any{}); err == nil {
+		t.Fatal("Invoke() error = nil, want prepare error")
+	}
+	runtime.prepareErr = nil
+	if _, err := executor.Invoke(context.Background(), "hello", "greet", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.prepared) != 2 {
+		t.Fatalf("prepared = %#v, want failed prepare retried", runtime.prepared)
+	}
+}
+
 func TestNormalizeJSONRejectsInvalidOutput(t *testing.T) {
 	_, err := NormalizeJSON([]byte("not json"))
 	if err == nil {
@@ -57,9 +124,11 @@ func TestNormalizeJSONRejectsInvalidOutput(t *testing.T) {
 }
 
 type fakeRuntime struct {
-	out      []byte
-	prepared []string
-	runs     []fakeRun
+	fingerprint string
+	prepareErr  error
+	out         []byte
+	prepared    []string
+	runs        []fakeRun
 }
 
 type fakeRun struct {
@@ -67,12 +136,19 @@ type fakeRun struct {
 	args []string
 }
 
-func (r *fakeRuntime) Prepare(p plugin.Plugin) error {
-	r.prepared = append(r.prepared, p.Manifest.Plugin.Name)
-	return nil
+func (r *fakeRuntime) PrepareFingerprint(plugin.Plugin) (string, error) {
+	if r.fingerprint == "" {
+		return "default", nil
+	}
+	return r.fingerprint, nil
 }
 
-func (r *fakeRuntime) Run(p plugin.Plugin, args ...string) ([]byte, error) {
+func (r *fakeRuntime) Prepare(_ context.Context, p plugin.Plugin) error {
+	r.prepared = append(r.prepared, p.Manifest.Plugin.Name)
+	return r.prepareErr
+}
+
+func (r *fakeRuntime) Run(_ context.Context, p plugin.Plugin, args ...string) ([]byte, error) {
 	r.runs = append(r.runs, fakeRun{name: p.Manifest.Plugin.Name, args: args})
 	return r.out, nil
 }

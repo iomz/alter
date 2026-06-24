@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -150,6 +152,31 @@ func TestMiseRunnerSetsIsolatedMiseEnv(t *testing.T) {
 	}
 }
 
+func TestLogDecisionDoesNotCreateMiseDirectories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ALTER_LOG", "debug")
+	resolver := testResolver(home, "", "")
+	var stderr bytes.Buffer
+	runner := NewMiseRunnerWithResolver(io.Discard, &stderr, resolver)
+
+	runner.logDecision(plugin.Plugin{
+		Path: home,
+		Manifest: plugin.Manifest{
+			Plugin: plugin.PluginSection{Name: "example", Entrypoint: "adapter"},
+		},
+	}, RuntimeDecision{Mode: RuntimeModeMise})
+
+	for _, path := range []string{
+		filepath.Join(home, ".local", "state", "alter", "mise"),
+		filepath.Join(home, ".cache", "alter", "mise"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("debug logging created %q; stat error = %v", path, err)
+		}
+	}
+}
+
 func TestDeclaredToolsReadsOnlyAlterMiseToml(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".tool-versions"), []byte("lua 5.4.7\n"), 0o644); err != nil {
@@ -187,7 +214,7 @@ func TestPrepareSkipsMiseInstallWhenNoToolsDeclared(t *testing.T) {
 
 	resolver := testResolver(home, fakeMise, "")
 	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, resolver)
-	err := runner.Prepare(plugin.Plugin{
+	err := runner.Prepare(context.Background(), plugin.Plugin{
 		Path: pluginDir,
 		Manifest: plugin.Manifest{
 			Plugin:  plugin.PluginSection{Name: "hello"},
@@ -199,6 +226,30 @@ func TestPrepareSkipsMiseInstallWhenNoToolsDeclared(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("mise install ran; marker stat error = %v", err)
+	}
+}
+
+func TestPrepareRejectsUnsupportedRuntimeManagerBeforeResolution(t *testing.T) {
+	home := t.TempDir()
+	resolver := testResolver(home, "", "")
+	resolver.lookPath = func(string) (string, error) {
+		t.Fatal("mise resolution called for unsupported runtime manager")
+		return "", nil
+	}
+	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, resolver)
+
+	err := runner.Prepare(context.Background(), plugin.Plugin{
+		Path: home,
+		Manifest: plugin.Manifest{
+			Plugin:  plugin.PluginSection{Name: "example"},
+			Runtime: plugin.RuntimeSection{Manager: "other"},
+		},
+	})
+	if err == nil {
+		t.Fatal("Prepare() error = nil, want unsupported runtime manager")
+	}
+	if !strings.Contains(err.Error(), `unsupported runtime manager "other"`) {
+		t.Fatalf("Prepare() error = %q, want unsupported runtime manager", err)
 	}
 }
 
@@ -233,7 +284,7 @@ manager = "mise"
 
 	resolver := testResolver(home, fakeMise, "")
 	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, resolver)
-	err := runner.Prepare(plugin.Plugin{
+	err := runner.Prepare(context.Background(), plugin.Plugin{
 		Path: pluginDir,
 		Manifest: plugin.Manifest{
 			Plugin: plugin.PluginSection{
@@ -278,7 +329,7 @@ func TestRunUsesDirectModeWhenNoToolsDeclared(t *testing.T) {
 
 	resolver := testResolver(home, fakeMise, "")
 	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, resolver)
-	out, err := runner.Run(plugin.Plugin{
+	out, err := runner.Run(context.Background(), plugin.Plugin{
 		Path: pluginDir,
 		Manifest: plugin.Manifest{
 			Plugin:  plugin.PluginSection{Name: "hello", Entrypoint: "adapter"},
@@ -296,6 +347,35 @@ func TestRunUsesDirectModeWhenNoToolsDeclared(t *testing.T) {
 	}
 }
 
+func TestRunCancelsDirectAdapterWithContext(t *testing.T) {
+	home := t.TempDir()
+	pluginDir := filepath.Join(home, "plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entrypoint := filepath.Join(pluginDir, "adapter")
+	if err := os.WriteFile(entrypoint, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, testResolver(home, "", ""))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := runner.Run(ctx, plugin.Plugin{
+		Path: pluginDir,
+		Manifest: plugin.Manifest{
+			Plugin:  plugin.PluginSection{Name: "hello", Entrypoint: "adapter"},
+			Runtime: plugin.RuntimeSection{Manager: "mise"},
+		},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want context cancellation")
+	}
+	if !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("Run() error = %q, want context cancellation", err)
+	}
+}
+
 func TestDeclaredToolsReadsAlterToolVersions(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "alter.tool-versions"), []byte("# plugin tools\nnode 24\npython 3.12\n"), 0o644); err != nil {
@@ -307,6 +387,55 @@ func TestDeclaredToolsReadsAlterToolVersions(t *testing.T) {
 	}
 	if strings.Join(tools, ",") != "node@24,python@3.12" {
 		t.Fatalf("declaredTools() = %#v, want node@24 and python@3.12", tools)
+	}
+}
+
+func TestPrepareFingerprintChangesWithRuntimeConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pluginDir := filepath.Join(home, "plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, plugin.ManifestFileName), []byte("manifest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(pluginDir, "alter.mise.toml")
+	if err := os.WriteFile(configPath, []byte("[tools]\nnode = \"24\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "adapter"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeMise := filepath.Join(home, "mise")
+	if err := os.WriteFile(fakeMise, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := plugin.Plugin{
+		Path: pluginDir,
+		Manifest: plugin.Manifest{
+			Plugin: plugin.PluginSection{
+				Name:       "test-runtime",
+				Entrypoint: "adapter",
+			},
+			Runtime: plugin.RuntimeSection{Manager: "mise"},
+		},
+	}
+	runner := NewMiseRunnerWithResolver(io.Discard, io.Discard, testResolver(home, fakeMise, ""))
+
+	first, err := runner.PrepareFingerprint(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("[tools]\nnode = \"25\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := runner.PrepareFingerprint(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("PrepareFingerprint() unchanged after runtime config change")
 	}
 }
 

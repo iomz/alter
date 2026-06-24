@@ -38,14 +38,16 @@ JSON
       echo "usage: alter-test-runtime invoke <json>" >&2
       exit 2
     fi
-    tool=$(printf '%s' "$2" | sed -n 's/.*"tool"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-    if [ "$tool" != "node-version" ]; then
-      echo "unsupported tool: $tool" >&2
-      exit 2
-    fi
-    version=$(node_version)
-    escaped_version=$(json_escape "$version")
-    printf '{\n  "plugin": "test-runtime",\n  "nodeVersion": "%s"\n}\n' "$escaped_version"
+    node -e '
+const input = JSON.parse(process.argv[1]);
+if (input.tool !== "node-version") {
+  throw new Error(`unsupported tool: ${String(input.tool)}`);
+}
+process.stdout.write(`${JSON.stringify({
+  plugin: "test-runtime",
+  nodeVersion: process.version,
+}, null, 2)}\n`);
+' "$2"
     ;;
   *)
     echo "usage: alter-test-runtime <manifest|doctor|invoke>" >&2
