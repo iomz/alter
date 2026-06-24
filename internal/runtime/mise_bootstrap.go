@@ -19,7 +19,7 @@ type MiseBootstrapper struct {
 	download    func(context.Context, string) ([]byte, error)
 	runScript   func(context.Context, string, string) ([]byte, error)
 	mkdirAll    func(string, os.FileMode) error
-	writeFile   func(string, []byte, os.FileMode) error
+	createTemp  func(string, string) (*os.File, error)
 	remove      func(string) error
 	tempDir     string
 	stdout      io.Writer
@@ -33,7 +33,7 @@ func NewMiseBootstrapper(stdout, stderr io.Writer) *MiseBootstrapper {
 		download:    downloadMiseInstaller,
 		runScript:   runMiseInstallerScript,
 		mkdirAll:    os.MkdirAll,
-		writeFile:   os.WriteFile,
+		createTemp:  os.CreateTemp,
 		remove:      os.Remove,
 		tempDir:     os.TempDir(),
 		stdout:      stdout,
@@ -55,11 +55,19 @@ func (b *MiseBootstrapper) Install(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	scriptPath := filepath.Join(b.tempDir, fmt.Sprintf("alter-mise-install-%d.sh", time.Now().UnixNano()))
-	if err := b.writeFile(scriptPath, script, 0o600); err != nil {
+	scriptFile, err := b.createTemp(b.tempDir, "alter-mise-install-*.sh")
+	if err != nil {
+		return "", fmt.Errorf("create mise installer script: %w", err)
+	}
+	scriptPath := scriptFile.Name()
+	defer b.remove(scriptPath)
+	if _, err := scriptFile.Write(script); err != nil {
+		_ = scriptFile.Close()
 		return "", fmt.Errorf("write mise installer script: %w", err)
 	}
-	defer b.remove(scriptPath)
+	if err := scriptFile.Close(); err != nil {
+		return "", fmt.Errorf("close mise installer script: %w", err)
+	}
 
 	output, err := b.runScript(ctx, scriptPath, target)
 	if err != nil {

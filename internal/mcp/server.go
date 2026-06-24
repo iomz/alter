@@ -9,7 +9,7 @@ import (
 )
 
 type Invoker interface {
-	Invoke(name, tool string, args any) ([]byte, error)
+	Invoke(context.Context, string, string, any) ([]byte, error)
 }
 
 type ToolMetadata struct {
@@ -67,8 +67,8 @@ func registerTool(server *mcpsdk.Server, invoker Invoker, tool ToolMetadata) {
 		mcpsdk.AddTool(server, &mcpsdk.Tool{
 			Name:        tool.Name,
 			Description: tool.Description,
-		}, func(_ context.Context, _ *mcpsdk.CallToolRequest, args HelloGreetArgs) (*mcpsdk.CallToolResult, any, error) {
-			out, err := invoker.Invoke(tool.Plugin, tool.Tool, map[string]any{"name": args.Name})
+		}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, args HelloGreetArgs) (*mcpsdk.CallToolResult, any, error) {
+			out, err := invoker.Invoke(ctx, tool.Plugin, tool.Tool, map[string]any{"name": args.Name})
 			if err != nil {
 				return nil, nil, err
 			}
@@ -87,8 +87,8 @@ func registerTool(server *mcpsdk.Server, invoker Invoker, tool ToolMetadata) {
 		mcpsdk.AddTool(server, &mcpsdk.Tool{
 			Name:        tool.Name,
 			Description: tool.Description,
-		}, func(_ context.Context, _ *mcpsdk.CallToolRequest, _ TestRuntimeNodeVersionArgs) (*mcpsdk.CallToolResult, any, error) {
-			out, err := invoker.Invoke(tool.Plugin, tool.Tool, map[string]any{})
+		}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ TestRuntimeNodeVersionArgs) (*mcpsdk.CallToolResult, any, error) {
+			out, err := invoker.Invoke(ctx, tool.Plugin, tool.Tool, map[string]any{})
 			if err != nil {
 				return nil, nil, err
 			}

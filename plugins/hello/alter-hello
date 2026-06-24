@@ -1,9 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
+plugin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 case "${1:-}" in
   manifest)
@@ -44,12 +42,7 @@ JSON
       echo "usage: alter-hello invoke <json>" >&2
       exit 2
     fi
-    name=$(printf '%s' "$2" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-    if [ -z "$name" ]; then
-      name="world"
-    fi
-    escaped_name=$(json_escape "$name")
-    printf '{\n  "message": "hello, %s",\n  "plugin": "hello"\n}\n' "$escaped_name"
+    printf '%s' "$2" | awk -f "$plugin_dir/invoke.awk"
     ;;
   *)
     echo "usage: alter-hello <manifest|doctor|invoke>" >&2

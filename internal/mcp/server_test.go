@@ -133,6 +133,9 @@ func TestRuntimeNodeVersionCallsAdapter(t *testing.T) {
 	if invoker.plugin != "test-runtime" || invoker.tool != "node-version" {
 		t.Fatalf("called %s/%s, want test-runtime/node-version", invoker.plugin, invoker.tool)
 	}
+	if len(result.Content) == 0 {
+		t.Fatal("no content returned; want at least one content item")
+	}
 	text, ok := result.Content[0].(*mcpsdk.TextContent)
 	if !ok {
 		t.Fatalf("content type = %T, want TextContent", result.Content[0])
@@ -149,7 +152,7 @@ type fakeInvoker struct {
 	args   map[string]any
 }
 
-func (i *fakeInvoker) Invoke(plugin, tool string, args any) ([]byte, error) {
+func (i *fakeInvoker) Invoke(_ context.Context, plugin, tool string, args any) ([]byte, error) {
 	i.plugin = plugin
 	i.tool = tool
 	i.args, _ = args.(map[string]any)

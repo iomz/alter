@@ -65,12 +65,16 @@ What alter will NOT do:
 `, installPath)
 	rendered, err := renderMarkdown("## setup mise\n" + body)
 	if err != nil {
-		fmt.Fprintln(out, titleStyle.Render("setup mise"))
-		fmt.Fprintln(out, strings.TrimSpace(body))
+		if _, writeErr := fmt.Fprintln(out, titleStyle.Render("setup mise")); writeErr != nil {
+			return writeErr
+		}
+		if _, writeErr := fmt.Fprintln(out, strings.TrimSpace(body)); writeErr != nil {
+			return writeErr
+		}
 		return err
 	}
-	fmt.Fprint(out, rendered)
-	return nil
+	_, err = fmt.Fprint(out, rendered)
+	return err
 }
 
 func ConfirmMiseBootstrap(out io.Writer, in io.Reader) (bool, error) {
@@ -101,12 +105,16 @@ func ConfirmPluginTrust(out io.Writer, in io.Reader, name string) (bool, error) 
 func PrintStub(out io.Writer, title, body string) error {
 	rendered, err := renderMarkdown("## " + title + "\n\n" + body)
 	if err != nil {
-		fmt.Fprintln(out, titleStyle.Render(title))
-		fmt.Fprintln(out, strings.TrimSpace(body))
+		if _, writeErr := fmt.Fprintln(out, titleStyle.Render(title)); writeErr != nil {
+			return writeErr
+		}
+		if _, writeErr := fmt.Fprintln(out, strings.TrimSpace(body)); writeErr != nil {
+			return writeErr
+		}
 		return err
 	}
-	fmt.Fprint(out, rendered)
-	return nil
+	_, err = fmt.Fprint(out, rendered)
+	return err
 }
 
 func PrintPromptDeferred(out io.Writer) {
