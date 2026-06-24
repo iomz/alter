@@ -8,7 +8,7 @@ import (
 
 func TestStoreListLoadsTypedManifestsSortedByName(t *testing.T) {
 	root := t.TempDir()
-	writeManifest(t, root, "suuntool", "Adapter boundary for suuntool", "alter-suuntool")
+	writeManifest(t, root, "sample", "Sample adapter boundary", "alter-sample")
 	writeManifest(t, root, "ingest", "Adapter boundary for ingest tooling", "alter-ingest")
 
 	store := NewStore(root)
@@ -22,8 +22,8 @@ func TestStoreListLoadsTypedManifestsSortedByName(t *testing.T) {
 	if got[0].Manifest.Plugin.Name != "ingest" {
 		t.Fatalf("first plugin = %q, want ingest", got[0].Manifest.Plugin.Name)
 	}
-	if got[1].Manifest.Plugin.Name != "suuntool" {
-		t.Fatalf("second plugin = %q, want suuntool", got[1].Manifest.Plugin.Name)
+	if got[1].Manifest.Plugin.Name != "sample" {
+		t.Fatalf("second plugin = %q, want sample", got[1].Manifest.Plugin.Name)
 	}
 }
 
