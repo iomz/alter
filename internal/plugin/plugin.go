@@ -1,46 +1,58 @@
 package plugin
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
+const ManifestFileName = "alter.plugin.toml"
+
 type Manifest struct {
-	Plugin   PluginSection   `json:"plugin"`
-	Upstream UpstreamSection `json:"upstream"`
-	Runtime  RuntimeSection  `json:"runtime"`
-	MCP      MCPSection      `json:"mcp"`
+	Plugin   PluginSection   `json:"plugin" toml:"plugin"`
+	Upstream UpstreamSection `json:"upstream" toml:"upstream"`
+	Runtime  RuntimeSection  `json:"runtime" toml:"runtime"`
+	MCP      MCPSection      `json:"mcp" toml:"mcp"`
 }
 
 type PluginSection struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Maintainer  string `json:"maintainer"`
-	Entrypoint  string `json:"entrypoint"`
+	Name        string `json:"name" toml:"name"`
+	Description string `json:"description" toml:"description"`
+	Maintainer  string `json:"maintainer" toml:"maintainer"`
+	Entrypoint  string `json:"entrypoint" toml:"entrypoint"`
 }
 
 type UpstreamSection struct {
-	Name       string `json:"name"`
-	Repository string `json:"repository"`
+	Name       string `json:"name" toml:"name"`
+	Repository string `json:"repository" toml:"repository"`
 }
 
 type RuntimeSection struct {
-	Manager string `json:"manager"`
+	Manager string `json:"manager" toml:"manager"`
 }
 
 type MCPSection struct {
-	Enabled   bool   `json:"enabled"`
-	Namespace string `json:"namespace"`
+	Enabled   bool   `json:"enabled" toml:"enabled"`
+	Namespace string `json:"namespace" toml:"namespace"`
 }
 
 type Plugin struct {
 	Path     string   `json:"path"`
 	Manifest Manifest `json:"manifest"`
+}
+
+type DoctorReport struct {
+	Name       string   `json:"name"`
+	Path       string   `json:"path"`
+	Manifest   string   `json:"manifest"`
+	Status     string   `json:"status"`
+	Entrypoint string   `json:"entrypoint,omitempty"`
+	Warnings   []string `json:"warnings,omitempty"`
 }
 
 type Store struct {
@@ -67,9 +79,9 @@ func FindRepoRoot() (string, error) {
 }
 
 func (s *Store) List() ([]Plugin, error) {
-	entries, err := os.ReadDir(filepath.Join(s.root, "plugins"))
+	entries, err := os.ReadDir(s.pluginsDir())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read plugins directory: %w", err)
 	}
 	var plugins []Plugin
 	for _, entry := range entries {
@@ -89,84 +101,96 @@ func (s *Store) List() ([]Plugin, error) {
 }
 
 func (s *Store) Load(name string) (Plugin, error) {
-	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") {
-		return Plugin{}, fmt.Errorf("invalid plugin name %q", name)
+	if err := validatePluginName(name); err != nil {
+		return Plugin{}, err
 	}
-	path := filepath.Join(s.root, "plugins", name)
-	manifest, err := readManifest(filepath.Join(path, "alter.plugin.toml"))
+	path := filepath.Join(s.pluginsDir(), name)
+	manifestPath := filepath.Join(path, ManifestFileName)
+	manifest, err := readManifest(manifestPath)
 	if err != nil {
 		return Plugin{}, err
 	}
-	if manifest.Plugin.Name != name {
-		return Plugin{}, fmt.Errorf("plugin path %q must match manifest name %q", name, manifest.Plugin.Name)
+	if err := manifest.Validate(name); err != nil {
+		return Plugin{}, fmt.Errorf("%s: %w", manifestPath, err)
 	}
 	return Plugin{Path: path, Manifest: manifest}, nil
 }
 
-func readManifest(path string) (Manifest, error) {
-	file, err := os.Open(path)
+func (s *Store) Doctor(name string) (DoctorReport, error) {
+	p, err := s.Load(name)
 	if err != nil {
-		return Manifest{}, err
+		return DoctorReport{}, err
 	}
-	defer file.Close()
 
+	report := DoctorReport{
+		Name:       p.Manifest.Plugin.Name,
+		Path:       p.Path,
+		Manifest:   filepath.Join(p.Path, ManifestFileName),
+		Status:     "ok",
+		Entrypoint: p.Manifest.Plugin.Entrypoint,
+	}
+
+	entrypointPath := filepath.Join(p.Path, p.Manifest.Plugin.Entrypoint)
+	if _, err := os.Stat(entrypointPath); errors.Is(err, os.ErrNotExist) {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("entrypoint %q does not exist yet", p.Manifest.Plugin.Entrypoint))
+	} else if err != nil {
+		return DoctorReport{}, fmt.Errorf("inspect plugin entrypoint: %w", err)
+	}
+
+	return report, nil
+}
+
+func (s *Store) pluginsDir() string {
+	return filepath.Join(s.root, "plugins")
+}
+
+func readManifest(path string) (Manifest, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("read plugin manifest: %w", err)
+	}
 	var manifest Manifest
-	section := ""
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			return Manifest{}, fmt.Errorf("invalid manifest line %q", line)
-		}
-		setManifestValue(&manifest, section, strings.TrimSpace(key), parseValue(strings.TrimSpace(value)))
-	}
-	if err := scanner.Err(); err != nil {
-		return Manifest{}, err
-	}
-	if manifest.Plugin.Name == "" || manifest.Plugin.Entrypoint == "" {
-		return Manifest{}, errors.New("manifest requires plugin.name and plugin.entrypoint")
-	}
-	if manifest.Runtime.Manager == "" {
-		manifest.Runtime.Manager = "mise"
+	if err := toml.Unmarshal(body, &manifest); err != nil {
+		return Manifest{}, fmt.Errorf("parse plugin manifest: %w", err)
 	}
 	return manifest, nil
 }
 
-func parseValue(value string) string {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
-		return strings.TrimSuffix(strings.TrimPrefix(value, "\""), "\"")
+func (m Manifest) Validate(expectedName string) error {
+	var missing []string
+	if m.Plugin.Name == "" {
+		missing = append(missing, "plugin.name")
 	}
-	return value
+	if m.Plugin.Description == "" {
+		missing = append(missing, "plugin.description")
+	}
+	if m.Plugin.Entrypoint == "" {
+		missing = append(missing, "plugin.entrypoint")
+	}
+	if m.Runtime.Manager == "" {
+		missing = append(missing, "runtime.manager")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("manifest missing required fields: %s", strings.Join(missing, ", "))
+	}
+	if m.Plugin.Name != expectedName {
+		return fmt.Errorf("plugin path %q must match manifest plugin.name %q", expectedName, m.Plugin.Name)
+	}
+	if m.Runtime.Manager != "mise" {
+		return fmt.Errorf("unsupported runtime manager %q", m.Runtime.Manager)
+	}
+	if m.MCP.Enabled && m.MCP.Namespace == "" {
+		return errors.New("manifest requires mcp.namespace when mcp.enabled is true")
+	}
+	return nil
 }
 
-func setManifestValue(manifest *Manifest, section, key, value string) {
-	switch section + "." + key {
-	case "plugin.name":
-		manifest.Plugin.Name = value
-	case "plugin.description":
-		manifest.Plugin.Description = value
-	case "plugin.maintainer":
-		manifest.Plugin.Maintainer = value
-	case "plugin.entrypoint":
-		manifest.Plugin.Entrypoint = value
-	case "upstream.name":
-		manifest.Upstream.Name = value
-	case "upstream.repository":
-		manifest.Upstream.Repository = value
-	case "runtime.manager":
-		manifest.Runtime.Manager = value
-	case "mcp.enabled":
-		manifest.MCP.Enabled = value == "true"
-	case "mcp.namespace":
-		manifest.MCP.Namespace = value
+func validatePluginName(name string) error {
+	if name == "" {
+		return errors.New("plugin name is required")
 	}
+	if strings.Contains(name, "/") || strings.Contains(name, string(filepath.Separator)) || strings.Contains(name, "..") {
+		return fmt.Errorf("invalid plugin name %q", name)
+	}
+	return nil
 }

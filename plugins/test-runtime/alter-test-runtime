@@ -1,0 +1,54 @@
+#!/usr/bin/env sh
+set -eu
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+node_version() {
+  node -v
+}
+
+case "${1:-}" in
+  manifest)
+    cat <<'JSON'
+{
+  "name": "test-runtime",
+  "description": "Mise isolation test plugin",
+  "tools": [
+    {
+      "name": "node-version",
+      "description": "Return Node.js version resolved through mise mode",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
+JSON
+    ;;
+  doctor)
+    version=$(node_version)
+    escaped_version=$(json_escape "$version")
+    printf '{\n  "ok": true,\n  "plugin": "test-runtime",\n  "nodeVersion": "%s"\n}\n' "$escaped_version"
+    ;;
+  invoke)
+    if [ "$#" -ne 2 ]; then
+      echo "usage: alter-test-runtime invoke <json>" >&2
+      exit 2
+    fi
+    tool=$(printf '%s' "$2" | sed -n 's/.*"tool"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    if [ "$tool" != "node-version" ]; then
+      echo "unsupported tool: $tool" >&2
+      exit 2
+    fi
+    version=$(node_version)
+    escaped_version=$(json_escape "$version")
+    printf '{\n  "plugin": "test-runtime",\n  "nodeVersion": "%s"\n}\n' "$escaped_version"
+    ;;
+  *)
+    echo "usage: alter-test-runtime <manifest|doctor|invoke>" >&2
+    exit 2
+    ;;
+esac

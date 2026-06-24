@@ -1,3 +1,58 @@
 #!/usr/bin/env sh
-cd "$(dirname "$0")" || exit 1
-exec go run ./cmd/alter-hello "$@"
+set -eu
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+case "${1:-}" in
+  manifest)
+    cat <<'JSON'
+{
+  "name": "hello",
+  "description": "Example alter plugin",
+  "tools": [
+    {
+      "name": "greet",
+      "description": "Return predictable greeting JSON",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    }
+  ]
+}
+JSON
+    ;;
+  doctor)
+    cat <<'JSON'
+{
+  "ok": true,
+  "plugin": "hello"
+}
+JSON
+    ;;
+  invoke)
+    if [ "$#" -ne 2 ]; then
+      echo "usage: alter-hello invoke <json>" >&2
+      exit 2
+    fi
+    name=$(printf '%s' "$2" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    if [ -z "$name" ]; then
+      name="world"
+    fi
+    escaped_name=$(json_escape "$name")
+    printf '{\n  "message": "hello, %s",\n  "plugin": "hello"\n}\n' "$escaped_name"
+    ;;
+  *)
+    echo "usage: alter-hello <manifest|doctor|invoke>" >&2
+    exit 2
+    ;;
+esac

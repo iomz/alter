@@ -1,134 +1,363 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
+	"github.com/iomz/alter/internal/adapter"
 	"github.com/iomz/alter/internal/mcp"
 	"github.com/iomz/alter/internal/plugin"
 	"github.com/iomz/alter/internal/runtime"
+	"github.com/iomz/alter/internal/trust"
+	"github.com/iomz/alter/internal/ui"
+	cli "github.com/urfave/cli/v3"
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "alter:", err)
+	if err := newCommand().Run(context.Background(), os.Args); err != nil {
+		fmt.Fprintln(os.Stderr, ui.Error("error"), err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+func newCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "alter",
+		Usage: "local/private tool control plane",
+		Commands: []*cli.Command{
+			newPluginCommand(),
+			newSetupCommand(),
+			newHelloCommand(),
+			newTestRuntimeCommand(),
+			newMCPCommand(),
+		},
+	}
+}
+
+func newPluginCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "plugin",
+		Usage: "inspect and check plugins",
+		Commands: []*cli.Command{
+			{
+				Name:  "list",
+				Usage: "list local plugins",
+				Action: func(context.Context, *cli.Command) error {
+					store, err := pluginContext()
+					if err != nil {
+						return err
+					}
+					plugins, err := store.List()
+					if err != nil {
+						return err
+					}
+					ui.PrintPluginList(os.Stdout, plugins)
+					return nil
+				},
+			},
+			{
+				Name:      "inspect",
+				Usage:     "print plugin manifest",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "print raw manifest JSON"},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return errors.New("usage: alter plugin inspect <name>")
+					}
+					store, err := pluginContext()
+					if err != nil {
+						return err
+					}
+					p, err := store.Load(cmd.Args().First())
+					if err != nil {
+						return err
+					}
+					if cmd.Bool("json") {
+						return printJSON(p.Manifest)
+					}
+					ui.PrintPluginManifest(os.Stdout, p)
+					return nil
+				},
+			},
+			{
+				Name:      "doctor",
+				Usage:     "validate plugin manifest and layout",
+				ArgsUsage: "<name>",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return errors.New("usage: alter plugin doctor <name>")
+					}
+					store, err := pluginContext()
+					if err != nil {
+						return err
+					}
+					name := cmd.Args().First()
+					report, err := store.Doctor(name)
+					if err != nil {
+						return err
+					}
+					if len(report.Warnings) > 0 {
+						ui.PrintPluginDoctorReport(os.Stdout, report)
+						return nil
+					}
+					p, err := store.Load(name)
+					if err != nil {
+						return err
+					}
+					runner := runtime.NewMiseRunner(os.Stdout, os.Stderr)
+					diagnostics, err := runner.Diagnostics(p)
+					if err != nil {
+						return err
+					}
+					ui.PrintRuntimeDiagnostics(os.Stdout, diagnostics)
+					return nil
+				},
+			},
+			{
+				Name:      "trust",
+				Usage:     "trust current plugin runtime fingerprints",
+				ArgsUsage: "<name>",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return errors.New("usage: alter plugin trust <name>")
+					}
+					p, diagnostics, err := pluginDiagnostics(cmd.Args().First())
+					if err != nil {
+						return err
+					}
+					if diagnostics.RuntimeMode == runtime.RuntimeModeDirect && diagnostics.InstallSkipped {
+						ui.PrintTrustNotRequired(os.Stdout, p)
+						return nil
+					}
+					ui.PrintTrustReview(os.Stdout, p, diagnostics)
+					confirmed, err := ui.ConfirmPluginTrust(os.Stdout, os.Stdin, p.Manifest.Plugin.Name)
+					if err != nil {
+						return err
+					}
+					if !confirmed {
+						fmt.Fprintln(os.Stdout, ui.Warning("cancelled"), "plugin trust unchanged")
+						return nil
+					}
+					record, storePath, err := trust.Trust(p)
+					if err != nil {
+						return err
+					}
+					ui.PrintTrustSaved(os.Stdout, record, storePath)
+					return nil
+				},
+			},
+			{
+				Name:      "untrust",
+				Usage:     "remove plugin trust record",
+				ArgsUsage: "<name>",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return errors.New("usage: alter plugin untrust <name>")
+					}
+					removed, storePath, err := trust.Untrust(cmd.Args().First())
+					if err != nil {
+						return err
+					}
+					ui.PrintTrustRemoved(os.Stdout, cmd.Args().First(), storePath, removed)
+					return nil
+				},
+			},
+			{
+				Name:      "trust-status",
+				Usage:     "show plugin trust status",
+				ArgsUsage: "<name>",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return errors.New("usage: alter plugin trust-status <name>")
+					}
+					_, diagnostics, err := pluginDiagnostics(cmd.Args().First())
+					if err != nil {
+						return err
+					}
+					ui.PrintRuntimeDiagnostics(os.Stdout, diagnostics)
+					return nil
+				},
+			},
+		},
+	}
+}
+
+func pluginDiagnostics(name string) (plugin.Plugin, runtime.DiagnosticReport, error) {
+	store, err := pluginContext()
+	if err != nil {
+		return plugin.Plugin{}, runtime.DiagnosticReport{}, err
+	}
+	p, err := store.Load(name)
+	if err != nil {
+		return plugin.Plugin{}, runtime.DiagnosticReport{}, err
+	}
+	runner := runtime.NewMiseRunner(os.Stdout, os.Stderr)
+	diagnostics, err := runner.Diagnostics(p)
+	if err != nil {
+		return plugin.Plugin{}, runtime.DiagnosticReport{}, err
+	}
+	return p, diagnostics, nil
+}
+
+func newSetupCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "setup",
+		Usage: "inspect local alter setup",
+		Commands: []*cli.Command{
+			{
+				Name:  "mise",
+				Usage: "inspect mise runtime discovery",
+				Action: func(ctx context.Context, _ *cli.Command) error {
+					resolver := runtime.NewMiseResolver()
+					path, err := resolver.Resolve()
+					if err == nil {
+						ui.PrintRuntimeFound(os.Stdout, path)
+						return nil
+					}
+					ui.PrintRuntimeMissing(os.Stdout, err)
+					installPath, pathErr := resolver.ManagedInstallPath()
+					if pathErr != nil {
+						return pathErr
+					}
+					if err := ui.PrintMiseBootstrapExplanation(os.Stdout, installPath); err != nil {
+						return err
+					}
+					confirmed, err := ui.ConfirmMiseBootstrap(os.Stdout, os.Stdin)
+					if err != nil {
+						return err
+					}
+					if !confirmed {
+						fmt.Fprintln(os.Stdout, ui.Warning("cancelled"), "mise installation skipped")
+						return nil
+					}
+					installedPath, err := runtime.NewMiseBootstrapper(os.Stdout, os.Stderr).Install(ctx)
+					if err != nil {
+						return err
+					}
+					ui.PrintRuntimeInstalled(os.Stdout, installedPath)
+					return nil
+				},
+			},
+			{
+				Name:  "shell",
+				Usage: "inspect shell integration setup",
+				Action: func(context.Context, *cli.Command) error {
+					err := ui.PrintStub(os.Stdout, "setup shell", "Shell integration is not implemented in Phase 1. alter does not modify shell startup files.")
+					ui.PrintPromptDeferred(os.Stdout)
+					return err
+				},
+			},
+			{
+				Name:  "cleanup",
+				Usage: "remove alter-managed mise runtime files",
+				Action: func(context.Context, *cli.Command) error {
+					items, err := runtime.CleanupManagedMise()
+					if err != nil {
+						return err
+					}
+					ui.PrintCleanupReport(os.Stdout, items)
+					return nil
+				},
+			},
+		},
+	}
+}
+
+func newHelloCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "hello",
+		Usage: "run hello adapter",
+		Commands: []*cli.Command{
+			{
+				Name:  "greet",
+				Usage: "return greeting JSON",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "name", Value: "world", Usage: "name to greet"},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					executor, err := executorContext()
+					if err != nil {
+						return err
+					}
+					out, err := executor.Invoke("hello", "greet", map[string]any{"name": cmd.String("name")})
+					if err != nil {
+						return err
+					}
+					fmt.Print(string(out))
+					return nil
+				},
+			},
+		},
+	}
+}
+
+func newTestRuntimeCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "test-runtime",
+		Usage: "run mise runtime isolation test adapter",
+		Commands: []*cli.Command{
+			{
+				Name:  "node-version",
+				Usage: "return Node.js version resolved through mise mode",
+				Action: func(context.Context, *cli.Command) error {
+					executor, err := executorContext()
+					if err != nil {
+						return err
+					}
+					out, err := executor.Invoke("test-runtime", "node-version", map[string]any{})
+					if err != nil {
+						return err
+					}
+					fmt.Print(string(out))
+					return nil
+				},
+			},
+		},
+	}
+}
+
+func newMCPCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "mcp",
+		Usage: "serve MCP over stdio",
+		Action: func(ctx context.Context, _ *cli.Command) error {
+			executor, err := executorContextWithRuntimeOutput(io.Discard, os.Stderr)
+			if err != nil {
+				return err
+			}
+			return mcp.Serve(ctx, executor)
+		},
+	}
+}
+
+func pluginContext() (*plugin.Store, error) {
 	root, err := plugin.FindRepoRoot()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	store := plugin.NewStore(root)
-	runner := runtime.NewMiseRunner(os.Stdout, os.Stderr)
-
-	if len(args) == 0 {
-		return usage()
-	}
-
-	switch args[0] {
-	case "plugin":
-		return runPlugin(store, runner, args[1:])
-	case "mcp":
-		if len(args) != 1 {
-			return errors.New("usage: alter mcp")
-		}
-		return mcp.Serve(os.Stdin, os.Stdout, store, runner)
-	case "hello":
-		return runHello(store, runner, args[1:])
-	default:
-		return usage()
-	}
+	return plugin.NewStore(root), nil
 }
 
-func runPlugin(store *plugin.Store, runner *runtime.MiseRunner, args []string) error {
-	if len(args) == 0 {
-		return errors.New("usage: alter plugin <list|inspect|doctor>")
-	}
-	switch args[0] {
-	case "list":
-		plugins, err := store.List()
-		if err != nil {
-			return err
-		}
-		for _, p := range plugins {
-			fmt.Printf("%s\t%s\n", p.Manifest.Plugin.Name, p.Manifest.Plugin.Description)
-		}
-		return nil
-	case "inspect":
-		if len(args) != 2 {
-			return errors.New("usage: alter plugin inspect <name>")
-		}
-		p, err := store.Load(args[1])
-		if err != nil {
-			return err
-		}
-		return printJSON(p.Manifest)
-	case "doctor":
-		if len(args) != 2 {
-			return errors.New("usage: alter plugin doctor <name>")
-		}
-		p, err := store.Load(args[1])
-		if err != nil {
-			return err
-		}
-		if err := runner.Prepare(p); err != nil {
-			return err
-		}
-		out, err := runner.Run(p, "doctor")
-		if err != nil {
-			return err
-		}
-		fmt.Print(string(out))
-		return nil
-	default:
-		return errors.New("usage: alter plugin <list|inspect|doctor>")
-	}
+func executorContext() (*adapter.Executor, error) {
+	return executorContextWithRuntimeOutput(os.Stdout, os.Stderr)
 }
 
-func runHello(store *plugin.Store, runner *runtime.MiseRunner, args []string) error {
-	if len(args) == 0 || args[0] != "greet" {
-		return errors.New("usage: alter hello greet --name <name>")
-	}
-	name := "world"
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--name" && i+1 < len(args) {
-			name = args[i+1]
-			i++
-			continue
-		}
-		return errors.New("usage: alter hello greet --name <name>")
-	}
-
-	p, err := store.Load("hello")
+func executorContextWithRuntimeOutput(stdout, stderr io.Writer) (*adapter.Executor, error) {
+	store, err := pluginContext()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	payload, err := json.Marshal(map[string]any{
-		"tool": "greet",
-		"args": map[string]any{"name": name},
-	})
-	if err != nil {
-		return err
-	}
-	out, err := runner.Run(p, "invoke", string(payload))
-	if err != nil {
-		return err
-	}
-	fmt.Print(string(out))
-	return nil
+	return adapter.NewExecutor(store, runtime.NewMiseRunner(stdout, stderr)), nil
 }
 
 func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
-}
-
-func usage() error {
-	return errors.New("usage: alter <plugin|hello|mcp>")
 }

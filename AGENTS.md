@@ -20,6 +20,8 @@ Business logic belongs in plugins or upstream tools.
 
 alter is a control plane.
 
+Alter should be humble: it wraps tools without demanding that tools know about Alter.
+
 It is not:
 
 - an agent framework
@@ -91,6 +93,50 @@ alter must not:
 - depend on user-specific shell configuration
 
 Shell integration, if ever provided, should be optional and explicit.
+
+---
+
+## CLI Presentation Policy
+
+All user-facing commands should share one visual language.
+
+Use the Charmbracelet stack consistently:
+
+- `lipgloss` for semantic styling, sections, labels, summaries, tables, and diagnostics
+- `huh` for interactive workflows
+- `glamour` when markdown-style explanatory content is useful
+
+Color should communicate meaning, not decorate output:
+
+- success: green
+- warning: amber
+- error: red
+- informational headings and labels: cyan or muted neutral
+
+Prefer structured, scan-friendly output:
+
+- start human-facing commands with a short heading
+- group details under clear sections
+- use aligned key/value rows for diagnostics
+- use compact tables for lists
+- show summaries before long detail blocks
+- keep operational messages information-dense and calm
+
+Avoid:
+
+- excessive colors
+- emoji-heavy output
+- decorative ASCII art
+- noisy banners
+- raw text dumps for human-facing commands
+
+Machine-facing output must remain clean and parseable:
+
+- adapter invocation output stays JSON
+- MCP stdio must not receive human-facing logs on stdout
+- explicit JSON output modes should not include styling or prose
+
+The desired CLI aesthetic is modern, professional, visually pleasant, and operationally focused.
 
 ---
 
