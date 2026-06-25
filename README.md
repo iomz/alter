@@ -1,6 +1,6 @@
 # alter
 
-A local/private tool control plane for managed CLI plugins and MCP exposure.
+A local/private control plane that turns trusted CLI plugins into managed capabilities, with local stdio MCP exposure.
 
 `alter` is not a business-logic tool. It discovers and inspects plugin adapters. Actual upstream tools do not need to know anything about `alter`, MCP, manifests, or schemas. Adapter plugins translate those tools into the alter contract.
 
@@ -281,12 +281,19 @@ alter
 
 Adapter internals may call upstream tools. That call remains adapter-owned.
 
-Generated MCP exposure is future work. Current MCP registration is explicit and should
-remain outside manifest parsing and static discovery logic.
+Automatic MCP tool generation from adapter metadata is future work. Current MCP registration
+is explicit and should remain outside manifest parsing and static discovery logic.
 
 ## MCP
 
 `alter mcp` serves MCP over stdio using `modelcontextprotocol/go-sdk`.
+
+`alter mcp` is local stdio MCP exposure for alter-managed capabilities. It is part of
+alter because it is the local AI-consumer boundary for trusted plugin adapters.
+
+Remote delivery is a separate concern. HTTP bridges, reverse proxies, OAuth/OIDC gateways,
+hosted app platforms, and ChatGPT Custom App adapters are not alter's core responsibility.
+Prefer composing with existing implementations for those layers when possible.
 
 Current exposed tool:
 
@@ -314,6 +321,7 @@ Future direction:
 - expose more plugin tools after adapter metadata stabilizes
 - keep MCP registration separate from plugin manifest parsing
 - keep transport-specific code thin
+- keep remote bridge, proxy, gateway, and auth concerns outside core alter unless a clear need emerges
 
 Manual isolation check:
 

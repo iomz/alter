@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`alter` is a local/private tool control plane for managed CLI plugins and MCP exposure.
+`alter` is a local/private control plane that turns trusted CLI plugins into managed capabilities, with local stdio MCP exposure.
 
 The core responsibility of alter is:
 
@@ -13,6 +13,8 @@ The core responsibility of alter is:
 - registry/index management
 
 Business logic belongs in plugins or upstream tools.
+
+Remote bridge, proxy, gateway, and authentication layers are delivery concerns, not alter's core identity.
 
 ---
 
@@ -28,6 +30,15 @@ It is not:
 - a workflow engine
 - a business application
 - a data processing platform
+- a generic MCP framework
+- a generic MCP proxy
+- a stdio-to-HTTP bridge
+- an OAuth/OIDC gateway
+- a hosted app platform
+- a semantic search engine
+- a Markdown vault editor
+
+Prefer composing with existing MCP, bridge, proxy, gateway, and authentication implementations when they are good enough.
 
 Keep the scope focused.
 
@@ -50,6 +61,26 @@ alter
 Never push alter-specific requirements into upstream projects.
 
 Do not modify upstream projects solely to improve alter integration.
+
+---
+
+## MCP Boundary
+
+`alter mcp` is local stdio MCP exposure for alter-managed capabilities.
+
+It belongs in alter because it is the local AI-consumer boundary for trusted plugin adapters.
+
+Do not expand alter into a generic MCP transport bridge, reverse proxy, OAuth/OIDC gateway,
+hosted app platform, semantic search engine, or vault editor.
+
+Remote delivery is a separate concern. HTTP bridges, reverse proxies, OAuth/OIDC gateways,
+hosted app platforms, and ChatGPT Custom App adapters should remain outside alter unless a
+clear need emerges.
+
+Prefer composing with existing implementations for those layers when possible.
+
+Generated MCP tool registration may evolve, but keep MCP-specific code thin and separate from
+plugin manifest parsing, static plugin discovery, and adapter-owned business logic.
 
 ---
 
