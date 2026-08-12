@@ -8,7 +8,7 @@ No daemon runs. MCP mode is `alter mcp` over stdio.
 
 ## Architecture
 
-- `alter`: CLI entrypoint built on `urfave/cli/v3`, plugin discovery, inspection, runtime discovery, adapter invocation, and MCP stdio serving
+- `alter`: Cobra CLI entrypoint, plugin discovery, inspection, runtime discovery, adapter invocation, and MCP stdio serving
 - `internal/runtime`: runtime discovery and execution boundary
 - `internal/plugin`: typed plugin manifest parsing, discovery, inspection, and static layout checks
 - `internal/adapter`: adapter execution and output normalization
@@ -391,6 +391,22 @@ files.
 
 `alter setup shell` is a styled stub. Shell integration remains optional and explicit;
 alter does not modify shell startup files.
+
+## Development
+
+Routine mechanical tasks are available through `just`:
+
+```sh
+just fmt
+just lint
+just test
+just check
+just doctor
+just diff
+```
+
+Recipes remain thin wrappers around Go, mise, and Git commands.
+`just check` formats Go sources, runs `go vet ./...`, then runs `go test ./...`.
 
 Terminal output uses Charmbracelet libraries:
 
